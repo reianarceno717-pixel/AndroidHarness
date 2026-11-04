@@ -36,7 +36,7 @@ enum class ProviderType(val label: String, val defaultBaseUrl: String) {
  */
 fun ProviderConfig.effectiveApiKey(stored: String?): String =
     stored?.takeIf { it.isNotBlank() }
-        ?: if (OpenAiCompatProvider.isLocalHost(baseUrl)) OpenAiCompatProvider.LOCAL_KEY else "builtin-default-key"
+        ?: if (OpenAiCompatProvider.isLocalHost(baseUrl)) OpenAiCompatProvider.LOCAL_KEY else ""
 
 /** Wire-endpoint naming for the protocol picker (what the API actually speaks). */
 val ProviderType.endpointPath: String
