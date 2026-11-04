@@ -333,6 +333,7 @@ internal fun MessageComposer(
                         onValueChange = onValueChange,
                         modifier = Modifier
                             .weight(1f)
+                            .widthIn(max = 500.dp)
                             .heightIn(max = lineHeight * visibleLines + inputPadding * 2)
                             .then(inputFocus?.let { Modifier.focusRequester(it) } ?: Modifier)
                             .semantics { contentDescription = uiContext.getString(R.string.ui_message_input) }

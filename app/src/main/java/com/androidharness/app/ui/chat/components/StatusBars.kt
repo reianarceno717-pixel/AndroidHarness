@@ -283,10 +283,12 @@ internal fun AttachmentChips(
 ) {
     val uiContext = androidx.compose.ui.platform.LocalContext.current
     val scheme = MaterialTheme.colorScheme
+    val scrollState = rememberScrollState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 16.dp)
+            .horizontalScroll(scrollState),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         attachments.forEachIndexed { idx, name ->
@@ -578,10 +580,12 @@ internal fun FileAttachmentChips(
 ) {
     val uiContext = androidx.compose.ui.platform.LocalContext.current
     val scheme = MaterialTheme.colorScheme
+    val scrollState = rememberScrollState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 16.dp)
+            .horizontalScroll(scrollState),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         files.forEachIndexed { idx, file ->
