@@ -1311,10 +1311,7 @@ class ChatViewModel(
         val unique = "$stamp-${importId.take(8)}-$safe"
         val node = dir.createFile(unique)
         try {
-            val outputFile = when (val ffn = node as? com.androidharness.app.workspace.FileFsNode) {
-                ffn -> ffn.file
-                else -> null
-            }
+            val outputFile = (node as? com.androidharness.app.workspace.FileFsNode)?.file
             if (outputFile == null) {
                 // SAF workspace: fall back to writeBytes (reads into memory, less common)
                 node.writeBytes(resolver.openInputStream(uri)!!.use { it.readBytes() })
