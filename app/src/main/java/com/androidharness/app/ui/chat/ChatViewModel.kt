@@ -1311,9 +1311,23 @@ class ChatViewModel(
         val unique = "$stamp-${importId.take(8)}-$safe"
         val node = dir.createFile(unique)
         try {
+            val outputFile = when (val ffn = node as? com.androidharness.app.workspace.FileFsNode) {
+                ffn -> ffn.file
+                else -> null
+            }
+            if (outputFile == null) {
+                // SAF workspace: fall back to writeBytes (reads into memory, less common)
+                node.writeBytes(resolver.openInputStream(uri)!!.use { it.readBytes() })
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    if (_state.value.attachmentImports.any { it.id == importId }) {
+                        addFileAttachment(FileAttachment(name, mime, FileAttachments.humanBytes(size ?: node.length), null, ".harness/attachments/$unique"))
+                    } else node.delete()
+                }
+                return
+            }
             var total = 0L
             resolver.openInputStream(uri)!!.use { input ->
-                java.io.FileOutputStream(node).use { output ->
+                java.io.FileOutputStream(outputFile).use { output ->
                     val chunk = ByteArray(64 * 1024)
                     while (true) {
                         val count = input.read(chunk)
