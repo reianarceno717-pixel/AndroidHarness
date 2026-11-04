@@ -1313,7 +1313,7 @@ class ChatViewModel(
         try {
             var total = 0L
             resolver.openInputStream(uri)!!.use { input ->
-                node.outputStream().use { output ->
+                java.io.FileOutputStream(node).use { output ->
                     val chunk = ByteArray(64 * 1024)
                     while (true) {
                         val count = input.read(chunk)
