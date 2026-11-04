@@ -27,6 +27,7 @@ val githubBuildProperties = Properties().apply {
 // Load only from the ignored local build settings; never from public CI variables.
 // Device Flow never embeds an OAuth client secret or auth backend.
 val githubClientId = githubBuildProperties.getProperty("GITHUB_CLIENT_ID", "")
+    .takeIf { it.isNotBlank() } ?: System.getenv("GITHUB_CLIENT_ID").orEmpty()
 val distributionChannel = providers.gradleProperty("distribution").getOrElse("github")
 require(distributionChannel in setOf("github", "play")) { "distribution must be github or play" }
 require(githubClientId.matches(Regex("[A-Za-z0-9]*"))) { "Invalid GitHub OAuth Client ID" }
