@@ -366,7 +366,10 @@ internal fun MessageComposer(
                             // BasicTextField owns scrolling, selection and IME composition.
                             Box(
                                 Modifier.fillMaxWidth()
-                                    .heightIn(min = if (desktop && !desktopInput) 72.dp else 44.dp)
+                                    .heightIn(
+                                        min = if (desktop && !desktopInput) 72.dp else 44.dp,
+                                        max = lineHeight * visibleLines + inputPadding * 2,
+                                    )
                                     .padding(vertical = inputPadding),
                                 contentAlignment = Alignment.CenterStart,
                             ) {

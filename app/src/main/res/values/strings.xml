@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- The product name is a brand, not UI copy, so it is never translated. -->
-    <string name="app_name" translatable="false">AndroidHarness</string>
+    <string name="app_name" translatable="false">GOD-AI</string>
 
     <!-- ================================================================
          Settings · page titles, descriptions and groups.

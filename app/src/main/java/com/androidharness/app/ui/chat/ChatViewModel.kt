@@ -1311,22 +1311,23 @@ class ChatViewModel(
         val unique = "$stamp-${importId.take(8)}-$safe"
         val node = dir.createFile(unique)
         try {
-            val bytes = resolver.openInputStream(uri)!!.use { input ->
-                val out = java.io.ByteArrayOutputStream()
-                val chunk = ByteArray(16 * 1024)
-                while (true) {
-                    val count = input.read(chunk)
-                    if (count < 0) break
-                    if (out.size().toLong() + count > cap) throw AttachmentProblem(AttachmentImportStatus.TOO_LARGE,
-                        c.appContext.getString(R.string.chat_attachment_too_large))
-                    out.write(chunk, 0, count)
+            var total = 0L
+            resolver.openInputStream(uri)!!.use { input ->
+                node.outputStream().use { output ->
+                    val chunk = ByteArray(64 * 1024)
+                    while (true) {
+                        val count = input.read(chunk)
+                        if (count < 0) break
+                        total += count
+                        if (total > cap) throw AttachmentProblem(AttachmentImportStatus.TOO_LARGE,
+                            c.appContext.getString(R.string.chat_attachment_too_large))
+                        output.write(chunk, 0, count)
+                    }
                 }
-                out.toByteArray()
             }
-            node.writeBytes(bytes)
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
                 if (_state.value.attachmentImports.any { it.id == importId }) {
-                    addFileAttachment(FileAttachment(name, mime, FileAttachments.humanBytes(size ?: bytes.size.toLong()), null, ".harness/attachments/$unique"))
+                    addFileAttachment(FileAttachment(name, mime, FileAttachments.humanBytes(size ?: total), null, ".harness/attachments/$unique"))
                 } else node.delete()
             }
         } catch (e: Exception) { runCatching { node.delete() }; throw e }

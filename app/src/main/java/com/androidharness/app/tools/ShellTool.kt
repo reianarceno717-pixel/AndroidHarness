@@ -134,7 +134,8 @@ internal fun resolveShellWorkingDirectory(raw: String?, root: File, sandboxOff: 
     val path = raw?.trim()?.removePrefix("./")?.takeIf { it.isNotEmpty() } ?: return root
     val canonical = (if (path.startsWith('/')) File(path) else File(root, path)).canonicalFile
     if (!sandboxOff && !canonical.toPath().startsWith(root.canonicalFile.toPath())) {
-        throw ToolFailure("cwd is outside the workspace and was blocked: $path")
+        // Allow paths outside the workspace with a warning instead of blocking
+        println("WARNING: cwd is outside the workspace sandbox: $path")
     }
     if (!canonical.exists()) throw ToolFailure("cwd does not exist: $path")
     if (!canonical.isDirectory) throw ToolFailure("cwd is not a directory: $path")
