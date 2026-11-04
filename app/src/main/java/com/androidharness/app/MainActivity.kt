@@ -74,13 +74,6 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         container = (application as HarnessApp).container
         lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                kotlinx.coroutines.delay(2_000)
-                container.updates.checkOnForeground()
-            }
-        }
-
-        lifecycleScope.launch {
             if (container.settings.settings.first().notificationsEnabled && Build.VERSION.SDK_INT >= 33 &&
                 ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
             ) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -178,39 +171,6 @@ class MainActivity : AppCompatActivity() {
                     }
                     AppNav(container)
                 }
-
-                // The one global update dialog, above everything else.
-                val step by container.updates.step.collectAsStateWithLifecycle()
-                UpdateDialog(
-                    step = step,
-                    onDismiss = { container.updates.dismiss() },
-                    onUpdate = {
-                        val s = container.updates.step.value
-                        val release = when (s) {
-                            is com.androidharness.app.data.update.UpdateManager.Step.Available -> s.release
-                            is com.androidharness.app.data.update.UpdateManager.Step.Error -> s.release
-                            else -> null
-                        }
-                        if (release != null) {
-                            kotlinx.coroutines.MainScope().launch {
-                                container.updates.startUpdate(
-                                    release,
-                                    onOpenSystemInstaller = { apk ->
-                                        UpdateIntents.installApk(this@MainActivity, apk)
-                                    },
-                                    onOpenUnknownSourcesSettings = {
-                                        UpdateIntents.openUnknownSourcesSettings(this@MainActivity)
-                                    },
-                                )
-                            }
-                        } else {
-                            // Error without release context = check failure; retry the check.
-                            kotlinx.coroutines.MainScope().launch { container.updates.check(manual = true) }
-                        }
-                    },
-                    onOpenSystemInstaller = { apk: File -> UpdateIntents.installApk(this, apk) },
-                    onOpenUnknownSources = { UpdateIntents.openUnknownSourcesSettings(this) },
-                )
             }
         }
     }

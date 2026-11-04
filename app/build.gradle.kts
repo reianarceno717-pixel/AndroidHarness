@@ -103,7 +103,7 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = ".godai"
         }
         // Opt-in, non-debuggable release-equivalent window for card frame measurements.
         // Test hosts never enter the normal release APK.
