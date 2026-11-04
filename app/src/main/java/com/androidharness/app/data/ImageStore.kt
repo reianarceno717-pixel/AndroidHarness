@@ -170,6 +170,6 @@ class ImageStore(private val context: Context) {
 
     companion object {
         private const val MAX_EDGE = 1568
-        private const val ORIGINAL_BYTE_LIMIT = 64L * 1024 * 1024
+        private const val ORIGINAL_BYTE_LIMIT = Long.MAX_VALUE
     }
 }

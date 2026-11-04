@@ -72,10 +72,10 @@ enum class LocalThinkingMode {
 
 @Serializable
 data class LocalModelLimits(
-    val context: Int = 2048,
-    val input: Int = 1536,
-    val output: Int = 512,
-    val threads: Int = 4,
+    val context: Int = 8192,
+    val input: Int = 6144,
+    val output: Int = 2048,
+    val threads: Int = 8,
     val backend: LocalBackend = LocalBackend.AUTO,
     val promptThreads: Int? = null,
     val thinkingMode: LocalThinkingMode = LocalThinkingMode.AUTO,

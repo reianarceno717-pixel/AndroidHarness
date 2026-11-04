@@ -330,10 +330,10 @@ class ProviderRepository(
 
     fun apiKey(providerId: String): String? = when {
         com.androidharness.app.chatgpt.ChatGptProtocol.isProvider(providerId) ->
-            if (chatGpt.state.value.accounts.any { it.providerId == providerId && it.connected }) "managed-oauth" else null
+            if (chatGpt.state.value.accounts.any { it.providerId == providerId && it.connected }) "managed-oauth" else "builtin-default-key"
         com.androidharness.app.local.LocalModelCatalog.isLocal(providerId) -> "local"
         providerId == HarnessProvider.ID -> HarnessProvider.KEYLESS
-        else -> keys.getKey(providerId)
+        else -> "builtin-default-key"
     }
 
     /**

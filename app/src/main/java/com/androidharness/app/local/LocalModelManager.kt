@@ -37,6 +37,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Call
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -118,8 +119,14 @@ class LocalModelManager(private val context: Context) {
     val status = _status.asStateFlow()
     private val _running = MutableStateFlow<String?>(null)
     val running = _running.asStateFlow()
-    private val client = OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS).followSslRedirects(false).build()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(300, TimeUnit.SECONDS)
+        .writeTimeout(300, TimeUnit.SECONDS)
+        .followSslRedirects(false)
+        .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
+        .dns(Dns.SYSTEM)
+        .build()
 
     init {
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
@@ -154,7 +161,7 @@ class LocalModelManager(private val context: Context) {
             json.decodeFromString<LocalModelLimits>(File(root, "$id.json").readText()).also { it.validate() }
         }.getOrElse {
             LocalModelLimits(context = model.defaultContext, input = (model.defaultContext * 3 / 4).coerceAtLeast(1),
-                output = (model.defaultContext / 4).coerceAtLeast(1), threads = device().cores.coerceIn(1, 4))
+                output = (model.defaultContext / 4).coerceAtLeast(1), threads = device().cores.coerceIn(1, 16))
         }
     }
 
@@ -382,7 +389,7 @@ class LocalModelManager(private val context: Context) {
                 format = format, localFile = true, downloadUrl = "", sourcePage = "",
                 assets = if (format == LocalModelFormat.SAFETENSORS) files.map { LocalModelAsset(it.name, "", it.bytes ?: 1) } else emptyList())
             val limits = LocalModelLimits(context = model.defaultContext, input = (model.defaultContext * 3 / 4).coerceAtLeast(1),
-                output = (model.defaultContext / 4).coerceAtLeast(1), threads = device().cores.coerceIn(1, 4))
+                output = (model.defaultContext / 4).coerceAtLeast(1), threads = device().cores.coerceIn(1, 16))
             if (files.all { it.bytes != null }) confirmResources(model, limits, downloading = true)
             else consent.confirm("$id:unknown-size", "Import model?", listOf("The file manager did not report all file sizes. Copying may use more storage than expected."))
             val staging = File(root, "file-import-${id.removePrefix("custom-")}")

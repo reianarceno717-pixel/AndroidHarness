@@ -350,6 +350,9 @@ fun FilesScreen(
                         IconButton(onClick = { refreshTick++ }) {
                             Icon(Icons.Outlined.Refresh, contentDescription = uiContext.getString(R.string.ui_refresh))
                         }
+                        IconButton(onClick = { importFilesPicker.launch(arrayOf("*/*")) }) {
+                            Icon(Icons.Outlined.FileUpload, contentDescription = uiContext.getString(R.string.files_import_files))
+                        }
                         Box {
                             IconButton(onClick = { headerMenuOpen = true }) {
                                 Icon(Icons.Filled.MoreVert, contentDescription = uiContext.getString(R.string.ui_more))
