@@ -1,14 +1,9 @@
 package com.androidharness.app
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
-import android.net.LinkAddress
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
@@ -70,13 +65,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
     }
 
     private fun startUsbTethering() {
-        // Try to enable USB tethering via ConnectivityManager
-        val success = try {
-            connectivityManager.startUsbTethering()
-        } catch (e: Exception) {
-            false
-        }
-
+        val success = tryUsbTethering(true)
         if (!success) {
             statusText.text = "USB tethering not available on this device"
             statusText.setTextColor(android.graphics.Color.RED)
@@ -86,16 +75,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
         statusText.text = "Enabling USB tethering..."
         statusText.setTextColor(android.graphics.Color.YELLOW)
 
-        // Start monitoring for IP address
-        monitorIpAddress()
+        // Poll for IP address
+        pollIpAddress()
     }
 
     private fun stopUsbTethering() {
-        try {
-            connectivityManager.stopUsbTethering()
-        } catch (e: Exception) {
-            // Ignore
-        }
+        tryUsbTethering(false)
         isTetheringEnabled = false
         enableButton.text = "Enable USB Tethering"
         ipText.text = "—"
@@ -104,8 +89,20 @@ class LaptopConnectionActivity : AppCompatActivity() {
         statusText.setTextColor(android.graphics.Color.WHITE)
     }
 
-    private fun monitorIpAddress() {
-        // Poll for IP address every 1 second for up to 15 seconds
+    @SuppressLint("MissingPermission")
+    private fun tryUsbTethering(enable: Boolean): Boolean {
+        return try {
+            val method = connectivityManager::class.java.getMethod(
+                if (enable) "startUsbTethering" else "stopUsbTethering"
+            )
+            method.isAccessible = true
+            method.invoke(connectivityManager) as Boolean
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun pollIpAddress() {
         var attempts = 0
         val maxAttempts = 15
 
@@ -128,7 +125,6 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         statusText.setTextColor(android.graphics.Color.RED)
                     }
                 } else {
-                    // Retry after 1 second
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this, 1000)
                 }
             }
@@ -145,7 +141,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 if (caps != null && caps.hasTransport(ConnectivityManager.TRANSPORT_ETHERNET)) {
                     val addrs = connectivityManager.getLinkAddresses(network)
                     for (addr in addrs) {
-                        if (addr is LinkAddress && !addr.isLinkLocalAddress) {
+                        if (addr.isLinkLocalAddress.not()) {
                             return addr.address.hostAddress
                         }
                     }
