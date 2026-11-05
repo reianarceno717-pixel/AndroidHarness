@@ -17,15 +17,18 @@ import com.androidharness.app.data.SessionRepository
 import com.androidharness.app.data.SettingsRepository
 import com.androidharness.app.data.db.AppDatabase
 import com.androidharness.app.llm.ProviderFactory
+import com.androidharness.app.llm.StreamEvent
 import com.androidharness.app.llm.effectiveApiKey
 import com.androidharness.app.tools.ToolRegistry
 import com.androidharness.app.workspace.WorkspaceManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -274,28 +277,61 @@ class AppContainer(val appContext: Context) {
     val mcp = com.androidharness.app.tools.mcp.McpManager(appContext, linuxEnv, keys, codeGraph, configuration)
     val github = com.androidharness.app.github.GitHubAuth(BuildConfig.GITHUB_CLIENT_ID,
         keys::githubCredential, keys::putGitHubCredential, { refreshGitHubAuth() })
-    fun routedProvider(): com.androidharness.app.llm.LlmProvider =
-        com.androidharness.app.llm.FallbackProvider(
-                factory = ProviderFactory::create,
-                resolve = { target ->
-                    providers.providers.first().firstOrNull { it.id == target.providerId && it.enabled }
-                        ?.takeIf { provider -> com.androidharness.app.llm.ProviderModelSearch.models(provider, providers.catalog(target.providerId)).any { it.id == target.model } }
-                        ?.copy(model = target.model)
-                },
-                keyFor = { config ->
-                    if (config.id == com.androidharness.app.llm.HarnessProvider.ID) providers.harnessApiKey()
-                    else {
-                        val live = providers.providers.first().firstOrNull { it.id == config.id }
-                        if (live == null || live.baseUrl != config.baseUrl || live.type != config.type) ""
-                        else config.effectiveApiKey(providers.apiKey(config.id))
-                    }
-                },
-                destination = { config ->
-                    if (config.id == com.androidharness.app.llm.HarnessProvider.ID)
-                        com.androidharness.app.llm.HarnessProvider.pool[config.model]?.baseUrl ?: config.baseUrl
-                    else config.baseUrl
-                },
-        )
+    private val routerClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+
+    private val keyFreeRouter = ProviderRouter.build(
+        entries = ProviderRouter.defaultKeyFreeEntries(routerClient, ProviderFactory.json),
+        httpClient = routerClient,
+        json = ProviderFactory.json,
+        enableParallel = true,
+    )
+
+    private val fallbackProvider = com.androidharness.app.llm.FallbackProvider(
+        factory = ProviderFactory::create,
+        resolve = { target ->
+            providers.providers.first().firstOrNull { it.id == target.providerId && it.enabled }
+                ?.takeIf { provider -> com.androidharness.app.llm.ProviderModelSearch.models(provider, providers.catalog(target.providerId)).any { it.id == target.model } }
+                ?.copy(model = target.model)
+        },
+        keyFor = { config ->
+            if (config.id == com.androidharness.app.llm.HarnessProvider.ID) providers.harnessApiKey()
+            else {
+                val live = providers.providers.first().firstOrNull { it.id == config.id }
+                if (live == null || live.baseUrl != config.baseUrl || live.type != config.type) ""
+                else config.effectiveApiKey(providers.apiKey(config.id))
+            }
+        },
+        destination = { config ->
+            if (config.id == com.androidharness.app.llm.HarnessProvider.ID)
+                com.androidharness.app.llm.HarnessProvider.pool[config.model]?.baseUrl ?: config.baseUrl
+            else config.baseUrl
+        },
+    )
+
+    fun routedProvider(): com.androidharness.app.llm.LlmProvider = object : com.androidharness.app.llm.LlmProvider {
+        override fun streamChat(
+            config: com.androidharness.app.llm.ProviderConfig,
+            apiKey: String,
+            systemPrompt: String,
+            messages: List<com.androidharness.app.core.ChatMessage>,
+            tools: List<com.androidharness.app.core.ToolSchema>,
+            options: com.androidharness.app.llm.RequestOptions,
+        ): Flow<StreamEvent> {
+            val isHarnessTarget = config.id == com.androidharness.app.llm.HarnessProvider.ID ||
+                config.baseUrl.contains("opencode.ai") ||
+                config.baseUrl.contains("kilo.ai") ||
+                config.baseUrl.contains("pollinations.ai")
+            return if (isHarnessTarget) {
+                keyFreeRouter.streamChat(config, apiKey, systemPrompt, messages, tools, options)
+            } else {
+                fallbackProvider.streamChat(config, apiKey, systemPrompt, messages, tools, options)
+            }
+        }
+    }
 
     val engine: AgentEngine = AgentEngine(
         providerFactory = { routedProvider() },

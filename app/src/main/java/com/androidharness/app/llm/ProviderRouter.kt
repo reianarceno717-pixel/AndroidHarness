@@ -19,20 +19,24 @@ import kotlin.math.max
  *    automatically tries the next available member with no user-visible delay.
  * 3. **Parallel ensemble** — for complex tasks, sends to multiple members at
  *    once and combines the best response.
+ *
+ * For non-pool providers (user-configured keys like OpenRouter, Groq), falls
+ * back to a single provider created via [factory].
  */
 class ProviderRouter(
     private val entries: List<ProviderPoolEntry>,
     private val httpClient: OkHttpClient,
     private val json: Json,
-    private val enableParallel: Boolean = false,
-) : LlmProvider {
-
-    private fun providerForType(type: ProviderType): LlmProvider = when (type) {
+    private val factory: (ProviderType) -> LlmProvider = { type -> when (type) {
         ProviderType.OPENAI_COMPAT -> OpenAiCompatProvider(httpClient, json)
         ProviderType.OPENAI_RESPONSES -> OpenAiResponsesProvider(httpClient, json)
         ProviderType.ANTHROPIC -> AnthropicProvider(httpClient, json)
         ProviderType.GEMINI -> GeminiProvider(httpClient, json)
-    }
+    } },
+    private val enableParallel: Boolean = false,
+) : LlmProvider {
+
+    private fun providerForType(type: ProviderType): LlmProvider = factory(type)
 
     override fun streamChat(
         config: ProviderConfig,
@@ -42,6 +46,21 @@ class ProviderRouter(
         tools: List<ToolSchema>,
         options: RequestOptions,
     ): Flow<StreamEvent> = callbackFlow {
+        val isHarnessTarget = config.id == HarnessProvider.ID ||
+            config.baseUrl.contains("opencode.ai") ||
+            config.baseUrl.contains("kilo.ai") ||
+            config.baseUrl.contains("pollinations.ai")
+
+        if (!isHarnessTarget) {
+            // Non-pool provider: use a single provider directly
+            val provider = providerForType(config.type)
+            collect(provider.streamChat(config, apiKey, systemPrompt, messages, tools, options)) { event ->
+                send(event)
+            }
+            close()
+            return@callbackFlow
+        }
+
         val classification = TaskClassifier.classify(messages)
         val hasImage = classification.hasImage
 
@@ -135,9 +154,15 @@ class ProviderRouter(
             entries: List<ProviderPoolEntry>,
             httpClient: OkHttpClient,
             json: Json,
+            factory: (ProviderType) -> LlmProvider = { type -> when (type) {
+                ProviderType.OPENAI_COMPAT -> OpenAiCompatProvider(httpClient, json)
+                ProviderType.OPENAI_RESPONSES -> OpenAiResponsesProvider(httpClient, json)
+                ProviderType.ANTHROPIC -> AnthropicProvider(httpClient, json)
+                ProviderType.GEMINI -> GeminiProvider(httpClient, json)
+            } },
             enableParallel: Boolean = false,
         ): ProviderRouter {
-            return ProviderRouter(entries, httpClient, json, enableParallel)
+            return ProviderRouter(entries, httpClient, json, factory, enableParallel)
         }
 
         /** Create default key-free pool entries (Zen, Kilo, Pollinations). */
