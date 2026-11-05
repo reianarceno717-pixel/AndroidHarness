@@ -80,54 +80,48 @@ class ProviderRouter(
             val routedConfig = entry.config
             val routedProvider = entry.provider
 
+            // Collect into a list first so we can decide failover before emitting
+            val buffered = mutableListOf<StreamEvent>()
+            var collectError: Exception? = null
             try {
-                val result = routedProvider.streamChat(
+                routedProvider.streamChat(
                     routedConfig,
                     apiKey,
                     systemPrompt,
                     messages,
                     tools,
                     options,
-                )
-
-                var emittedAny = false
-                collect(result) { event ->
-                    when (event) {
-                        is StreamEvent.Failure -> {
-                            // Only failover on connection-level rate limits / server errors,
-                            // not on mid-stream errors once we've started emitting.
-                            if (!emittedAny && (event.retryable == true || event.code == 429 || event.code == 503)) {
-                                entry.markFailure()
-                                lastError = event
-                                continue@for // try next candidate
-                            }
-                            // Pass through non-retryable or mid-stream failures
-                            send(event)
-                            close()
-                            return@callbackFlow
-                        }
-                        is StreamEvent.ProviderChanged -> {
-                            send(event)
-                            close()
-                            return@callbackFlow
-                        }
-                        else -> {
-                            send(event)
-                            emittedAny = true
-                        }
-                    }
-                }
-
-                if (emittedAny) {
-                    entry.markSuccess()
-                    close()
-                    return@callbackFlow
+                ).collect { event ->
+                    buffered.add(event)
                 }
             } catch (e: Exception) {
-                entry.markFailure()
-                lastError = StreamEvent.Failure(e.message ?: "Unknown error", retryable = true)
-                continue@for
+                collectError = e
             }
+
+            if (collectError != null) {
+                entry.markFailure()
+                lastError = StreamEvent.Failure(collectError.message ?: "Unknown error", retryable = true)
+                continue
+            }
+
+            // Check if the first event is a retryable connection failure (failover)
+            val firstEvent = buffered.firstOrNull()
+            if (firstEvent is StreamEvent.Failure && !buffered.any { it !is StreamEvent.Failure }) {
+                if (firstEvent.retryable == true || firstEvent.code == 429 || firstEvent.code == 503) {
+                    entry.markFailure()
+                    lastError = firstEvent
+                    continue // try next candidate
+                }
+            }
+
+            // Emit all collected events
+            for (event in buffered) {
+                send(event)
+            }
+
+            entry.markSuccess()
+            close()
+            return@callbackFlow
         }
 
         // All providers failed
