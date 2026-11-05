@@ -80,7 +80,7 @@ class ProviderRouter(
                     messages,
                     tools,
                     options,
-                ).collect { event: StreamEvent ->
+                ).collect { event ->
                     when (event) {
                         is StreamEvent.Failure -> {
                             if (!emittedAny && (event.retryable == true || event.code == 429 || event.code == 503)) {
