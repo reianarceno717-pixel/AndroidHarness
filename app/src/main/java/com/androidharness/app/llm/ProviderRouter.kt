@@ -9,15 +9,6 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import kotlin.comparisons.compareByDescending
 
-/**
- * Smart provider router with fast failover.
- *
- * Strategy:
- * 1. Task-aware routing: images → vision models, code → coding models, simple → fastest
- * 2. Fast failover: if one provider rate-limits (429), instantly try the next
- * 3. Zen and Kilo only (Pollinations removed - HTTP 429 rate limit)
- * 4. First provider to produce a complete response wins
- */
 class ProviderRouter(
     private val entries: List<ProviderPoolEntry>,
     private val httpClient: OkHttpClient,
@@ -43,14 +34,6 @@ class ProviderRouter(
             .filter { !hasImage || it.visionCapable }
             .sortedWith(
                 compareByDescending<ProviderPoolEntry> { it.speedScore }
-                    .thenByDescending {
-                        when {
-                            classification.isCode && it.codingCapable -> 2
-                            classification.isReasoning -> 1
-                            else -> 0
-                        }
-                    }
-                    .thenByDescending { it.speedScore }
             )
 
         if (candidates.isEmpty()) {
@@ -63,18 +46,17 @@ class ProviderRouter(
             return@callbackFlow
         }
 
-        var lastError: StreamEvent.Failure? = null
+        var lastError: String? = null
 
         for (entry in candidates) {
             if (!entry.isAvailable(entry.cooldownMs())) continue
 
-            val routedConfig = entry.config
             val routedProvider = entry.provider
 
             try {
                 var emittedAny = false
                 routedProvider.streamChat(
-                    routedConfig,
+                    entry.config,
                     apiKey,
                     systemPrompt,
                     messages,
@@ -85,13 +67,10 @@ class ProviderRouter(
                         is StreamEvent.Failure -> {
                             if (!emittedAny && (event.retryable == true || event.code == 429 || event.code == 503)) {
                                 entry.markFailure()
-                                lastError = event
+                                lastError = event.message
                             } else {
                                 send(event)
                             }
-                        }
-                        is StreamEvent.ProviderChanged -> {
-                            send(event)
                         }
                         else -> {
                             send(event)
@@ -107,11 +86,11 @@ class ProviderRouter(
                 }
             } catch (e: Exception) {
                 entry.markFailure()
-                lastError = StreamEvent.Failure(e.message ?: "Unknown error", retryable = true)
+                lastError = e.message
             }
         }
 
-        send(lastError ?: StreamEvent.Failure("All providers unavailable. Try again in a moment.", code = 503, retryable = true))
+        send(lastError ?: "All providers unavailable.")
         close()
     }
 
