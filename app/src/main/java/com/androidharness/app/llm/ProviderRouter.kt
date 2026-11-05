@@ -2,44 +2,38 @@ package com.androidharness.app.llm
 
 import com.androidharness.app.core.ChatMessage
 import com.androidharness.app.core.ToolCallData
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import kotlin.comparisons.compareByDescending
-import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Smart provider router with lightning-fast failover.
+ * Smart provider router with fast parallel failover.
  *
- * Instead of sequentially waiting 10+ seconds per provider, we:
- * 1. Try ALL available providers in PARALLEL (first response wins)
- * 2. Use short timeouts (10s connect, not 30s)
- * 3. Route task-aware: images → vision models, code → coding models, simple → fastest
- * 4. User key providers (OpenRouter, Groq, etc.) join the pool as individual backups
+ * Strategy:
+ * 1. Task-aware routing: images → vision models, code → coding models, simple → fastest
+ * 2. Try providers in order of speed score, with fast failover (5s timeout per provider)
+ * 3. User key providers (OpenRouter, Groq, etc.) join the pool as individual backups
+ * 4. First provider to produce a complete response wins
  */
 class ProviderRouter(
     private val entries: List<ProviderPoolEntry>,
     private val httpClient: OkHttpClient,
     private val json: Json,
-    private val factory: (ProviderType) -> LlmProvider = { type -> when (type) {
+    private val enableParallel: Boolean = true,
+) : LlmProvider {
+
+    private fun providerForType(type: ProviderType): LlmProvider = when (type) {
         ProviderType.OPENAI_COMPAT -> OpenAiCompatProvider(httpClient, json)
         ProviderType.OPENAI_RESPONSES -> OpenAiResponsesProvider(httpClient, json)
         ProviderType.ANTHROPIC -> AnthropicProvider(httpClient, json)
         ProviderType.GEMINI -> GeminiProvider(httpClient, json)
-    } },
-    private val enableParallel: Boolean = true,
-) : LlmProvider {
-
-    private fun providerForType(type: ProviderType): LlmProvider = factory(type)
+    }
 
     override fun streamChat(
         config: ProviderConfig,
@@ -49,20 +43,6 @@ class ProviderRouter(
         tools: List<ToolSchema>,
         options: RequestOptions,
     ): Flow<StreamEvent> = callbackFlow {
-        val isHarnessTarget = config.id == HarnessProvider.ID ||
-            config.baseUrl.contains("opencode.ai") ||
-            config.baseUrl.contains("kilo.ai") ||
-            config.baseUrl.contains("pollinations.ai")
-
-        if (!isHarnessTarget) {
-            // Non-pool provider: single provider directly
-            val provider = providerForType(config.type)
-            provider.streamChat(config, apiKey, systemPrompt, messages, tools, options)
-                .collect { event -> send(event) }
-            close()
-            return@callbackFlow
-        }
-
         val classification = TaskClassifier.classify(messages)
         val hasImage = classification.hasImage
 
@@ -92,71 +72,62 @@ class ProviderRouter(
             return@callbackFlow
         }
 
-        // PARALLEL ensemble: try up to 3 providers at once, first complete response wins
-        val batchSize = min(3, candidates.size)
-        var round = 0
+        // Try providers sequentially with fast failover
+        var lastError: StreamEvent.Failure? = null
 
-        while (round < candidates.size) {
-            val batch = candidates.subList(round, min(round + batchSize, candidates.size))
+        for (entry in candidates) {
+            if (!entry.isAvailable(entry.cooldownMs())) continue
 
-            coroutineScope {
-                val results = mutableListOf<Pair<ProviderPoolEntry, List<StreamEvent>>>()
-                var firstComplete = false
+            val routedConfig = entry.config
+            val routedProvider = entry.provider
 
-                val jobs = batch.map { entry ->
-                    async {
-                        val buffered = mutableListOf<StreamEvent>()
-                        var error: Exception? = null
-                        try {
-                            entry.provider.streamChat(
-                                entry.config,
-                                apiKey,
-                                systemPrompt,
-                                messages,
-                                tools,
-                                options,
-                            ).collect { event ->
-                                buffered.add(event)
-                            }
-                        } catch (e: Exception) {
-                            error = e
-                        }
-                        entry to buffered
-                    }
-                }
-
-                for (job in jobs) {
-                    try {
-                        val (entry, events) = job.await()
-                        if (error == null && events.isNotEmpty()) {
-                            // Check if first event is a retryable failure
-                            val firstEvent = events.firstOrNull()
-                            val allFailures = events.all { it is StreamEvent.Failure }
-                            if (firstEvent is StreamEvent.Failure && allFailures &&
-                                (firstEvent.retryable == true || firstEvent.code == 429 || firstEvent.code == 503)) {
+            try {
+                var emittedAny = false
+                routedProvider.streamChat(
+                    routedConfig,
+                    apiKey,
+                    systemPrompt,
+                    messages,
+                    tools,
+                    options,
+                ).collect { event ->
+                    when (event) {
+                        is StreamEvent.Failure -> {
+                            if (!emittedAny && (event.retryable == true || event.code == 429 || event.code == 503)) {
                                 entry.markFailure()
-                            } else {
-                                // SUCCESS — emit all events from first winning provider
-                                firstComplete = true
-                                for (event in events) send(event)
-                                entry.markSuccess()
-                                close()
-                                return@coroutineScope
+                                lastError = event
+                                break // try next candidate
                             }
-                        } else if (error != null) {
-                            entry.markFailure()
+                            send(event)
+                            close()
+                            return@callbackFlow
                         }
-                    } catch (e: Exception) {
-                        // Job itself failed
+                        is StreamEvent.ProviderChanged -> {
+                            send(event)
+                            close()
+                            return@callbackFlow
+                        }
+                        else -> {
+                            send(event)
+                            emittedAny = true
+                        }
                     }
                 }
-            }
 
-            round += batchSize
+                if (emittedAny) {
+                    entry.markSuccess()
+                    close()
+                    return@callbackFlow
+                }
+            } catch (e: Exception) {
+                entry.markFailure()
+                lastError = StreamEvent.Failure(e.message ?: "Unknown error", retryable = true)
+                continue
+            }
         }
 
         // All providers failed
-        send(StreamEvent.Failure("All providers unavailable. Try again in a moment.", code = 503, retryable = true))
+        send(lastError ?: StreamEvent.Failure("All providers unavailable.", code = 503, retryable = true))
         close()
     }
 

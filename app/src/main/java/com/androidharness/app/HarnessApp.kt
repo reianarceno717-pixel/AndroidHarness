@@ -28,7 +28,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emit
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -287,56 +289,57 @@ class AppContainer(val appContext: Context) {
         .build()
 
     fun routedProvider(): com.androidharness.app.llm.LlmProvider = object : com.androidharness.app.llm.LlmProvider {
-    override fun streamChat(
-        config: com.androidharness.app.llm.ProviderConfig,
-        apiKey: String,
-        systemPrompt: String,
-        messages: List<com.androidharness.app.core.ChatMessage>,
-        tools: List<ToolSchema>,
-        options: com.androidharness.app.llm.RequestOptions,
-    ): Flow<StreamEvent> = callbackFlow {
-        // Collect all enabled providers (key-free pool + user key providers)
-        val allProviders = providers.first()
-        val entries = mutableListOf<ProviderPoolEntry>()
+        override fun streamChat(
+            config: com.androidharness.app.llm.ProviderConfig,
+            apiKey: String,
+            systemPrompt: String,
+            messages: List<com.androidharness.app.core.ChatMessage>,
+            tools: List<ToolSchema>,
+            options: com.androidharness.app.llm.RequestOptions,
+        ): Flow<StreamEvent> {
+            return kotlinx.coroutines.flow.flow {
+                // Collect all enabled providers (key-free pool + user key providers)
+                val allProviders = providers.first()
+                val entries = mutableListOf<ProviderPoolEntry>()
 
-        // Add key-free entries (Zen, Kilo, Pollinations)
-        entries.addAll(ProviderRouter.defaultKeyFreeEntries(routerClient, ProviderFactory.json))
+                // Add key-free entries (Zen, Kilo, Pollinations)
+                entries.addAll(ProviderRouter.defaultKeyFreeEntries(routerClient, ProviderFactory.json))
 
-        // Add user key providers to the parallel pool
-        for (p in allProviders) {
-            if (p.id == com.androidharness.app.llm.HarnessProvider.ID) continue
-            if (com.androidharness.app.chatgpt.ChatGptProtocol.isProvider(p.id)) continue
-            if (com.androidharness.app.local.LocalModelCatalog.isLocal(p.id)) continue
-            if (p.baseUrl.startsWith("local://")) continue
-            if (!p.enabled) continue
+                // Add user key providers to the parallel pool
+                for (p in allProviders) {
+                    if (p.id == com.androidharness.app.llm.HarnessProvider.ID) continue
+                    if (com.androidharness.app.chatgpt.ChatGptProtocol.isProvider(p.id)) continue
+                    if (com.androidharness.app.local.LocalModelCatalog.isLocal(p.id)) continue
+                    if (p.baseUrl.startsWith("local://")) continue
+                    if (!p.enabled) continue
 
-            val modelLower = p.model.lowercase()
-            entries.add(ProviderPoolEntry(
-                config = p,
-                provider = com.androidharness.app.llm.ProviderFactory.create(p.type),
-                visionCapable = listOf("vl", "vision", "omni", "4o").any { modelLower.contains(it) },
-                codingCapable = listOf("coder", "code", "deepseek-coder", "qwen-coder").any { modelLower.contains(it) },
-                speedScore = when {
-                    p.baseUrl.contains("groq") -> 90
-                    p.baseUrl.contains("openrouter") -> 80
-                    p.baseUrl.contains("together") -> 75
-                    p.baseUrl.contains("deepseek") -> 70
-                    p.baseUrl.contains("gemini") -> 65
-                    p.baseUrl.contains("kilo") -> 70
-                    p.baseUrl.contains("zen") -> 60
-                    p.baseUrl.contains("pollinations") -> 50
-                    else -> 40
-                },
-            ))
+                    val modelLower = p.model.lowercase()
+                    entries.add(ProviderPoolEntry(
+                        config = p,
+                        provider = com.androidharness.app.llm.ProviderFactory.create(p.type),
+                        visionCapable = listOf("vl", "vision", "omni", "4o").any { modelLower.contains(it) },
+                        codingCapable = listOf("coder", "code", "deepseek-coder", "qwen-coder").any { modelLower.contains(it) },
+                        speedScore = when {
+                            p.baseUrl.contains("groq") -> 90
+                            p.baseUrl.contains("openrouter") -> 80
+                            p.baseUrl.contains("together") -> 75
+                            p.baseUrl.contains("deepseek") -> 70
+                            p.baseUrl.contains("gemini") -> 65
+                            p.baseUrl.contains("kilo") -> 70
+                            p.baseUrl.contains("zen") -> 60
+                            p.baseUrl.contains("pollinations") -> 50
+                            else -> 40
+                        },
+                    ))
+                }
+
+                val router = ProviderRouter.build(entries, routerClient, ProviderFactory.json, enableParallel = true)
+
+                router.streamChat(config, apiKey, systemPrompt, messages, tools, options)
+                    .collect { event -> emit(event) }
+            }
         }
-
-        val router = ProviderRouter.build(entries, routerClient, ProviderFactory.json, enableParallel = true)
-
-        router.streamChat(config, apiKey, systemPrompt, messages, tools, options)
-            .collect { event -> send(event) }
-        close()
     }
-}
 
     val engine: AgentEngine = AgentEngine(
         providerFactory = { routedProvider() },
