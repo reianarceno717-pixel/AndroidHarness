@@ -63,6 +63,7 @@ class ProviderRouter(
         }
 
         var lastError: StreamEvent.Failure? = null
+        var success = false
 
         for (entry in candidates) {
             if (!entry.isAvailable(entry.cooldownMs())) continue
@@ -85,16 +86,12 @@ class ProviderRouter(
                             if (!emittedAny && (event.retryable == true || event.code == 429 || event.code == 503)) {
                                 entry.markFailure()
                                 lastError = event
-                                break // try next candidate
+                            } else {
+                                send(event)
                             }
-                            send(event)
-                            close()
-                            return@callbackFlow
                         }
                         is StreamEvent.ProviderChanged -> {
                             send(event)
-                            close()
-                            return@callbackFlow
                         }
                         else -> {
                             send(event)
@@ -105,17 +102,18 @@ class ProviderRouter(
 
                 if (emittedAny) {
                     entry.markSuccess()
-                    close()
-                    return@callbackFlow
+                    success = true
+                    break
                 }
             } catch (e: Exception) {
                 entry.markFailure()
                 lastError = StreamEvent.Failure(e.message ?: "Unknown error", retryable = true)
-                continue
             }
         }
 
-        send(lastError ?: StreamEvent.Failure("All providers unavailable.", code = 503, retryable = true))
+        if (!success) {
+            send(lastError ?: StreamEvent.Failure("All providers unavailable.", code = 503, retryable = true))
+        }
         close()
     }
 
