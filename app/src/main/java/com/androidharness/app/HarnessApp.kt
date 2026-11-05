@@ -286,55 +286,57 @@ class AppContainer(val appContext: Context) {
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
-    private val keyFreeRouter = ProviderRouter.build(
-        entries = ProviderRouter.defaultKeyFreeEntries(routerClient, ProviderFactory.json),
-        httpClient = routerClient,
-        json = ProviderFactory.json,
-        enableParallel = true,
-    )
-
-    private val fallbackProvider = com.androidharness.app.llm.FallbackProvider(
-        factory = ProviderFactory::create,
-        resolve = { target ->
-            providers.providers.first().firstOrNull { it.id == target.providerId && it.enabled }
-                ?.takeIf { provider -> com.androidharness.app.llm.ProviderModelSearch.models(provider, providers.catalog(target.providerId)).any { it.id == target.model } }
-                ?.copy(model = target.model)
-        },
-        keyFor = { config ->
-            if (config.id == com.androidharness.app.llm.HarnessProvider.ID) providers.harnessApiKey()
-            else {
-                val live = providers.providers.first().firstOrNull { it.id == config.id }
-                if (live == null || live.baseUrl != config.baseUrl || live.type != config.type) ""
-                else config.effectiveApiKey(providers.apiKey(config.id))
-            }
-        },
-        destination = { config ->
-            if (config.id == com.androidharness.app.llm.HarnessProvider.ID)
-                com.androidharness.app.llm.HarnessProvider.pool[config.model]?.baseUrl ?: config.baseUrl
-            else config.baseUrl
-        },
-    )
-
     fun routedProvider(): com.androidharness.app.llm.LlmProvider = object : com.androidharness.app.llm.LlmProvider {
-        override fun streamChat(
-            config: com.androidharness.app.llm.ProviderConfig,
-            apiKey: String,
-            systemPrompt: String,
-            messages: List<com.androidharness.app.core.ChatMessage>,
-            tools: List<ToolSchema>,
-            options: com.androidharness.app.llm.RequestOptions,
-        ): Flow<StreamEvent> {
-            val isHarnessTarget = config.id == com.androidharness.app.llm.HarnessProvider.ID ||
-                config.baseUrl.contains("opencode.ai") ||
-                config.baseUrl.contains("kilo.ai") ||
-                config.baseUrl.contains("pollinations.ai")
-            return if (isHarnessTarget) {
-                keyFreeRouter.streamChat(config, apiKey, systemPrompt, messages, tools, options)
-            } else {
-                fallbackProvider.streamChat(config, apiKey, systemPrompt, messages, tools, options)
-            }
+    override fun streamChat(
+        config: com.androidharness.app.llm.ProviderConfig,
+        apiKey: String,
+        systemPrompt: String,
+        messages: List<com.androidharness.app.core.ChatMessage>,
+        tools: List<ToolSchema>,
+        options: com.androidharness.app.llm.RequestOptions,
+    ): Flow<StreamEvent> = callbackFlow {
+        // Collect all enabled providers (key-free pool + user key providers)
+        val allProviders = providers.first()
+        val entries = mutableListOf<ProviderPoolEntry>()
+
+        // Add key-free entries (Zen, Kilo, Pollinations)
+        entries.addAll(ProviderRouter.defaultKeyFreeEntries(routerClient, ProviderFactory.json))
+
+        // Add user key providers to the parallel pool
+        for (p in allProviders) {
+            if (p.id == com.androidharness.app.llm.HarnessProvider.ID) continue
+            if (com.androidharness.app.chatgpt.ChatGptProtocol.isProvider(p.id)) continue
+            if (com.androidharness.app.local.LocalModelCatalog.isLocal(p.id)) continue
+            if (p.baseUrl.startsWith("local://")) continue
+            if (!p.enabled) continue
+
+            val modelLower = p.model.lowercase()
+            entries.add(ProviderPoolEntry(
+                config = p,
+                provider = com.androidharness.app.llm.ProviderFactory.create(p.type),
+                visionCapable = listOf("vl", "vision", "omni", "4o").any { modelLower.contains(it) },
+                codingCapable = listOf("coder", "code", "deepseek-coder", "qwen-coder").any { modelLower.contains(it) },
+                speedScore = when {
+                    p.baseUrl.contains("groq") -> 90
+                    p.baseUrl.contains("openrouter") -> 80
+                    p.baseUrl.contains("together") -> 75
+                    p.baseUrl.contains("deepseek") -> 70
+                    p.baseUrl.contains("gemini") -> 65
+                    p.baseUrl.contains("kilo") -> 70
+                    p.baseUrl.contains("zen") -> 60
+                    p.baseUrl.contains("pollinations") -> 50
+                    else -> 40
+                },
+            ))
         }
+
+        val router = ProviderRouter.build(entries, routerClient, ProviderFactory.json, enableParallel = true)
+
+        router.streamChat(config, apiKey, systemPrompt, messages, tools, options)
+            .collect { event -> send(event) }
+        close()
     }
+}
 
     val engine: AgentEngine = AgentEngine(
         providerFactory = { routedProvider() },

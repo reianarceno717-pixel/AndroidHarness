@@ -2,27 +2,29 @@ package com.androidharness.app.llm
 
 import com.androidharness.app.core.ChatMessage
 import com.androidharness.app.core.ToolCallData
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import kotlin.comparisons.compareByDescending
 import kotlin.math.max
+import kotlin.math.min
 
 /**
- * Smart provider router that wraps multiple [ProviderPoolEntry] members and
- * provides:
+ * Smart provider router with lightning-fast failover.
  *
- * 1. **Task-aware routing** — routes to vision-capable providers when images
- *    are attached, coding-strong providers for code tasks, fastest for simple.
- * 2. **Invisible failover** — when a provider returns 429/503 on connect,
- *    automatically tries the next available member with no user-visible delay.
- * 3. **Parallel ensemble** — for complex tasks, sends to multiple members at
- *    once and combines the best response.
- *
- * For non-pool providers (user-configured keys like OpenRouter, Groq), falls
- * back to a single provider created via [factory].
+ * Instead of sequentially waiting 10+ seconds per provider, we:
+ * 1. Try ALL available providers in PARALLEL (first response wins)
+ * 2. Use short timeouts (10s connect, not 30s)
+ * 3. Route task-aware: images → vision models, code → coding models, simple → fastest
+ * 4. User key providers (OpenRouter, Groq, etc.) join the pool as individual backups
  */
 class ProviderRouter(
     private val entries: List<ProviderPoolEntry>,
@@ -34,7 +36,7 @@ class ProviderRouter(
         ProviderType.ANTHROPIC -> AnthropicProvider(httpClient, json)
         ProviderType.GEMINI -> GeminiProvider(httpClient, json)
     } },
-    private val enableParallel: Boolean = false,
+    private val enableParallel: Boolean = true,
 ) : LlmProvider {
 
     private fun providerForType(type: ProviderType): LlmProvider = factory(type)
@@ -53,12 +55,10 @@ class ProviderRouter(
             config.baseUrl.contains("pollinations.ai")
 
         if (!isHarnessTarget) {
-            // Non-pool provider: use a single provider directly
+            // Non-pool provider: single provider directly
             val provider = providerForType(config.type)
             provider.streamChat(config, apiKey, systemPrompt, messages, tools, options)
-                .collect { event ->
-                    send(event)
-                }
+                .collect { event -> send(event) }
             close()
             return@callbackFlow
         }
@@ -92,61 +92,71 @@ class ProviderRouter(
             return@callbackFlow
         }
 
-        // Try providers sequentially with invisible failover at connection time
-        var lastError: StreamEvent.Failure? = null
+        // PARALLEL ensemble: try up to 3 providers at once, first complete response wins
+        val batchSize = min(3, candidates.size)
+        var round = 0
 
-        for (entry in candidates) {
-            if (!entry.isAvailable(entry.cooldownMs())) continue
+        while (round < candidates.size) {
+            val batch = candidates.subList(round, min(round + batchSize, candidates.size))
 
-            val routedConfig = entry.config
-            val routedProvider = entry.provider
+            coroutineScope {
+                val results = mutableListOf<Pair<ProviderPoolEntry, List<StreamEvent>>>()
+                var firstComplete = false
 
-            // Collect into a list first so we can decide failover before emitting
-            val buffered = mutableListOf<StreamEvent>()
-            var collectError: Exception? = null
-            try {
-                routedProvider.streamChat(
-                    routedConfig,
-                    apiKey,
-                    systemPrompt,
-                    messages,
-                    tools,
-                    options,
-                ).collect { event ->
-                    buffered.add(event)
+                val jobs = batch.map { entry ->
+                    async {
+                        val buffered = mutableListOf<StreamEvent>()
+                        var error: Exception? = null
+                        try {
+                            entry.provider.streamChat(
+                                entry.config,
+                                apiKey,
+                                systemPrompt,
+                                messages,
+                                tools,
+                                options,
+                            ).collect { event ->
+                                buffered.add(event)
+                            }
+                        } catch (e: Exception) {
+                            error = e
+                        }
+                        entry to buffered
+                    }
                 }
-            } catch (e: Exception) {
-                collectError = e
-            }
 
-            if (collectError != null) {
-                entry.markFailure()
-                lastError = StreamEvent.Failure(collectError.message ?: "Unknown error", retryable = true)
-                continue
-            }
-
-            // Check if the first event is a retryable connection failure (failover)
-            val firstEvent = buffered.firstOrNull()
-            if (firstEvent is StreamEvent.Failure && !buffered.any { it !is StreamEvent.Failure }) {
-                if (firstEvent.retryable == true || firstEvent.code == 429 || firstEvent.code == 503) {
-                    entry.markFailure()
-                    lastError = firstEvent
-                    continue // try next candidate
+                for (job in jobs) {
+                    try {
+                        val (entry, events) = job.await()
+                        if (error == null && events.isNotEmpty()) {
+                            // Check if first event is a retryable failure
+                            val firstEvent = events.firstOrNull()
+                            val allFailures = events.all { it is StreamEvent.Failure }
+                            if (firstEvent is StreamEvent.Failure && allFailures &&
+                                (firstEvent.retryable == true || firstEvent.code == 429 || firstEvent.code == 503)) {
+                                entry.markFailure()
+                            } else {
+                                // SUCCESS — emit all events from first winning provider
+                                firstComplete = true
+                                for (event in events) send(event)
+                                entry.markSuccess()
+                                close()
+                                return@coroutineScope
+                            }
+                        } else if (error != null) {
+                            entry.markFailure()
+                        }
+                    } catch (e: Exception) {
+                        // Job itself failed
+                    }
                 }
             }
 
-            // Emit all collected events
-            for (event in buffered) {
-                send(event)
-            }
-
-            entry.markSuccess()
-            close()
-            return@callbackFlow
+            round += batchSize
         }
 
         // All providers failed
-        send(lastError ?: StreamEvent.Failure("All providers unavailable.", code = 503, retryable = true))
+        send(StreamEvent.Failure("All providers unavailable. Try again in a moment.", code = 503, retryable = true))
         close()
     }
 
@@ -162,7 +172,7 @@ class ProviderRouter(
                 ProviderType.ANTHROPIC -> AnthropicProvider(httpClient, json)
                 ProviderType.GEMINI -> GeminiProvider(httpClient, json)
             } },
-            enableParallel: Boolean = false,
+            enableParallel: Boolean = true,
         ): ProviderRouter {
             return ProviderRouter(entries, httpClient, json, factory, enableParallel)
         }
