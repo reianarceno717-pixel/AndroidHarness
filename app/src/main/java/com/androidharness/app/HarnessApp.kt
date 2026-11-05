@@ -19,8 +19,13 @@ import com.androidharness.app.data.db.AppDatabase
 import com.androidharness.app.llm.ProviderFactory
 import com.androidharness.app.llm.ProviderPoolEntry
 import com.androidharness.app.llm.ProviderRouter
+import com.androidharness.app.llm.ProviderType
 import com.androidharness.app.llm.StreamEvent
 import com.androidharness.app.llm.ToolSchema
+import com.androidharness.app.llm.AnthropicProvider
+import com.androidharness.app.llm.GeminiProvider
+import com.androidharness.app.llm.OpenAiCompatProvider
+import com.androidharness.app.llm.OpenAiResponsesProvider
 import com.androidharness.app.llm.effectiveApiKey
 import com.androidharness.app.tools.ToolRegistry
 import com.androidharness.app.workspace.WorkspaceManager
