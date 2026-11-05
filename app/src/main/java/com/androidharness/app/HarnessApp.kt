@@ -321,7 +321,7 @@ class AppContainer(val appContext: Context) {
             apiKey: String,
             systemPrompt: String,
             messages: List<com.androidharness.app.core.ChatMessage>,
-            tools: List<com.androidharness.app.core.ToolSchema>,
+            tools: List<ToolSchema>,
             options: com.androidharness.app.llm.RequestOptions,
         ): Flow<StreamEvent> {
             val isHarnessTarget = config.id == com.androidharness.app.llm.HarnessProvider.ID ||

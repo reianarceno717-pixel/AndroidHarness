@@ -55,9 +55,10 @@ class ProviderRouter(
         if (!isHarnessTarget) {
             // Non-pool provider: use a single provider directly
             val provider = providerForType(config.type)
-            collect(provider.streamChat(config, apiKey, systemPrompt, messages, tools, options)) { event ->
-                send(event)
-            }
+            provider.streamChat(config, apiKey, systemPrompt, messages, tools, options)
+                .collect { event ->
+                    send(event)
+                }
             close()
             return@callbackFlow
         }
