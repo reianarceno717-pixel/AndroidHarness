@@ -90,7 +90,7 @@ class ProviderRouter(
             }
         }
 
-        send(lastError ?: "All providers unavailable.")
+        send(StreamEvent.Failure(lastError ?: "All providers unavailable.", code = 503, retryable = true))
         close()
     }
 
