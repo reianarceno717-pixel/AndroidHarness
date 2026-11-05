@@ -15,8 +15,8 @@ import kotlin.comparisons.compareByDescending
  * Strategy:
  * 1. Task-aware routing: images → vision models, code → coding models, simple → fastest
  * 2. Fast failover: if one provider rate-limits (429), instantly try the next
- * 3. Pollinations is SEQUENTIAL ONLY — it cannot handle parallel requests (HTTP 429)
- * 4. All other providers try in parallel, first response wins
+ * 3. Zen and Kilo only (Pollinations removed - HTTP 429 rate limit)
+ * 4. First provider to produce a complete response wins
  */
 class ProviderRouter(
     private val entries: List<ProviderPoolEntry>,
@@ -38,11 +38,9 @@ class ProviderRouter(
         val classification = TaskClassifier.classify(messages)
         val hasImage = classification.hasImage
 
-        // Separate Pollinations (sequential only) from parallel providers
-        val parallelCandidates = entries
+        val candidates = entries
             .filter { it.isAvailable(it.cooldownMs()) }
             .filter { !hasImage || it.visionCapable }
-            .filter { it.config.id != "harness-pollinations" }
             .sortedWith(
                 compareByDescending<ProviderPoolEntry> { it.speedScore }
                     .thenByDescending {
@@ -55,69 +53,18 @@ class ProviderRouter(
                     .thenByDescending { it.speedScore }
             )
 
-        val pollinationsCandidate = entries
-            .firstOrNull { it.config.id == "harness-pollinations" && it.isAvailable(it.cooldownMs()) && (!hasImage || it.visionCapable) }
-
-        // Try parallel candidates first (all except Pollinations)
-        if (parallelCandidates.isNotEmpty()) {
-            val result = tryParallelCandidates(parallelCandidates, config, apiKey, systemPrompt, messages, tools, options)
-            if (result != null) {
-                collect(result) { event -> send(event) }
-                close()
-                return@callbackFlow
-            }
-        }
-
-        // Fallback: try Pollinations sequentially (it can't do parallel)
-        if (pollinationsCandidate != null) {
-            try {
-                pollinationsCandidate.provider.streamChat(
-                    pollinationsCandidate.config,
-                    apiKey,
-                    systemPrompt,
-                    messages,
-                    tools,
-                    options,
-                ).collect { event ->
-                    when (event) {
-                        is StreamEvent.Failure -> {
-                            if (event.retryable == true || event.code == 429 || event.code == 503) {
-                                pollinationsCandidate.markFailure()
-                            } else {
-                                send(event)
-                            }
-                        }
-                        else -> send(event)
-                    }
-                }
-                pollinationsCandidate.markSuccess()
-            } catch (e: Exception) {
-                pollinationsCandidate.markFailure()
-                send(StreamEvent.Failure(e.message ?: "Unknown error", retryable = true))
-            }
+        if (candidates.isEmpty()) {
+            send(StreamEvent.Failure(
+                "No available providers. Try again in a moment.",
+                code = 503,
+                retryable = true,
+            ))
             close()
             return@callbackFlow
         }
 
-        // Nothing worked
-        send(StreamEvent.Failure("All providers unavailable. Try again in a moment.", code = 503, retryable = true))
-        close()
-    }
+        var lastError: StreamEvent.Failure? = null
 
-    private fun tryParallelCandidates(
-        candidates: List<ProviderPoolEntry>,
-        config: ProviderConfig,
-        apiKey: String,
-        systemPrompt: String,
-        messages: List<ChatMessage>,
-        tools: List<ToolSchema>,
-        options: RequestOptions,
-    ): Flow<StreamEvent>? {
-        var bestResult: Flow<StreamEvent>? = null
-        var bestEntry: ProviderPoolEntry? = null
-
-        // Try each candidate sequentially but with very short timeout
-        // First one that starts streaming wins
         for (entry in candidates) {
             if (!entry.isAvailable(entry.cooldownMs())) continue
 
@@ -125,8 +72,7 @@ class ProviderRouter(
             val routedProvider = entry.provider
 
             try {
-                // Test if this provider can connect quickly
-                var gotResponse = false
+                var emittedAny = false
                 routedProvider.streamChat(
                     routedConfig,
                     apiKey,
@@ -134,34 +80,39 @@ class ProviderRouter(
                     messages,
                     tools,
                     options,
-                ).collect { event ->
-                    if (event !is StreamEvent.Failure || (event as StreamEvent.Failure).retryable != true) {
-                        gotResponse = true
+                ).collect { event: StreamEvent ->
+                    when (event) {
+                        is StreamEvent.Failure -> {
+                            if (!emittedAny && (event.retryable == true || event.code == 429 || event.code == 503)) {
+                                entry.markFailure()
+                                lastError = event
+                            } else {
+                                send(event)
+                            }
+                        }
+                        is StreamEvent.ProviderChanged -> {
+                            send(event)
+                        }
+                        else -> {
+                            send(event)
+                            emittedAny = true
+                        }
                     }
                 }
 
-                if (gotResponse) {
-                    bestResult = routedProvider.streamChat(
-                        routedConfig,
-                        apiKey,
-                        systemPrompt,
-                        messages,
-                        tools,
-                        options,
-                    )
-                    bestEntry = entry
-                    break
+                if (emittedAny) {
+                    entry.markSuccess()
+                    close()
+                    return@callbackFlow
                 }
             } catch (e: Exception) {
                 entry.markFailure()
+                lastError = StreamEvent.Failure(e.message ?: "Unknown error", retryable = true)
             }
         }
 
-        if (bestEntry != null) {
-            bestEntry.markSuccess()
-        }
-
-        return bestResult
+        send(lastError ?: StreamEvent.Failure("All providers unavailable. Try again in a moment.", code = 503, retryable = true))
+        close()
     }
 
     companion object {
