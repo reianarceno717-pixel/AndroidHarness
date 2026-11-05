@@ -208,6 +208,7 @@ dependencies {
     implementation("com.materialkolor:material-kolor:5.0.1")
     implementation(libs.compose.material.icons.extended)
     debugImplementation(libs.compose.ui.tooling)
+    implementation("com.google.android.material:material:1.11.0")
 
     implementation(libs.core.ktx)
     implementation(libs.activity.compose)
