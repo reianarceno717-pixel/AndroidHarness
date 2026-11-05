@@ -4,6 +4,7 @@ import com.androidharness.app.core.ChatMessage
 import com.androidharness.app.core.ToolCallData
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import kotlin.comparisons.compareByDescending

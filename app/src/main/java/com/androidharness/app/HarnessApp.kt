@@ -17,7 +17,10 @@ import com.androidharness.app.data.SessionRepository
 import com.androidharness.app.data.SettingsRepository
 import com.androidharness.app.data.db.AppDatabase
 import com.androidharness.app.llm.ProviderFactory
+import com.androidharness.app.llm.ProviderPoolEntry
+import com.androidharness.app.llm.ProviderRouter
 import com.androidharness.app.llm.StreamEvent
+import com.androidharness.app.llm.ToolSchema
 import com.androidharness.app.llm.effectiveApiKey
 import com.androidharness.app.tools.ToolRegistry
 import com.androidharness.app.workspace.WorkspaceManager
