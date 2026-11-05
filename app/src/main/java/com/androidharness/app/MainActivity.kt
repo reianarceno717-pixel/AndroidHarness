@@ -206,15 +206,17 @@ class MainActivity : AppCompatActivity() {
         container.dhizuku.refresh()
         promptShownThisResume = false
         if (isUnlocked && lastPausedTimestamp > 0L) {
-            val settings = runCatching {
-                kotlinx.coroutines.runBlocking { container.settings.settings.first() }
-            }.getOrNull()
-            if (settings != null && settings.biometricLockEnabled) {
-                val timeoutMillis = settings.biometricLockTimeoutMinutes * 60 * 1000L
-                val elapsed = System.currentTimeMillis() - lastPausedTimestamp
-                if (elapsed >= timeoutMillis) {
-                    isUnlocked = false
-                    promptBiometricUnlock()
+            // Non-blocking settings read via coroutine instead of runBlocking on main thread
+            lifecycleScope.launch {
+                container.settings.settings.first().let { settings ->
+                    if (settings.biometricLockEnabled) {
+                        val timeoutMillis = settings.biometricLockTimeoutMinutes * 60 * 1000L
+                        val elapsed = System.currentTimeMillis() - lastPausedTimestamp
+                        if (elapsed >= timeoutMillis) {
+                            isUnlocked = false
+                            promptBiometricUnlock()
+                        }
+                    }
                 }
             }
         }

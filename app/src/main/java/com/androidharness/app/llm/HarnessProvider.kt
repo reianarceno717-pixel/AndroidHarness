@@ -208,41 +208,106 @@ object HarnessProvider {
         }
         .build()
 
-    fun create(pooledClient: OkHttpClient = poolClient): LlmProvider = object : LlmProvider {
-        override fun streamChat(
-            config: ProviderConfig,
-            apiKey: String,
-            systemPrompt: String,
-            messages: List<com.androidharness.app.core.ChatMessage>,
-            tools: List<ToolSchema>,
-            options: RequestOptions,
-        ): Flow<StreamEvent> {
-            // Pooled community upstreams route straight to their own endpoint
-            // on the chat/completions wire, no zen probing or session header.
-            pool[config.model]?.let { upstream ->
-                val routed = config.copy(type = ProviderType.OPENAI_COMPAT, baseUrl = upstream.baseUrl)
-                return OpenAiCompatProvider(pooledClient, ProviderFactory.json)
-                    .streamChat(routed, OpenAiCompatProvider.LOCAL_KEY, systemPrompt, messages, tools, options)
+    fun create(pooledClient: OkHttpClient = poolClient): LlmProvider {
+        // Core Harness provider with Zen wire-probing logic (existing behavior)
+        val core = object : LlmProvider {
+            override fun streamChat(
+                config: ProviderConfig,
+                apiKey: String,
+                systemPrompt: String,
+                messages: List<com.androidharness.app.core.ChatMessage>,
+                tools: List<ToolSchema>,
+                options: RequestOptions,
+            ): Flow<StreamEvent> {
+                // Pooled community upstreams route straight to their own endpoint
+                // on the chat/completions wire, no zen probing or session header.
+                pool[config.model]?.let { upstream ->
+                    val routed = config.copy(type = ProviderType.OPENAI_COMPAT, baseUrl = upstream.baseUrl)
+                    return OpenAiCompatProvider(pooledClient, ProviderFactory.json)
+                        .streamChat(routed, OpenAiCompatProvider.LOCAL_KEY, systemPrompt, messages, tools, options)
+                }
+                if (config.model !in customModelIds) return flowOf(StreamEvent.Failure(
+                    "${config.model} is no longer available in Harness. Refresh the model list and choose an available model.",
+                ))
+                // Zen's free tier rejects anonymous calls, so a saved key rides
+                // out on the keyed client; the sentinel stays on the anonymous one.
+                val key = realKey(apiKey)
+                val wire = wire(config.model)
+                val baseUrl = if (wire == ProviderType.ANTHROPIC) BASE_URL.removeSuffix("/v1") else BASE_URL
+                val routed = config.copy(type = wire, baseUrl = baseUrl)
+                val routedOptions = if (options.cacheKey.isNullOrBlank()) {
+                    options.copy(cacheKey = UUID.randomUUID().toString())
+                } else options
+                val http = if (key != null) keyedClient else client
+                val provider = when (wire) {
+                    ProviderType.ANTHROPIC -> AnthropicProvider(http, ProviderFactory.json)
+                    ProviderType.OPENAI_RESPONSES -> OpenAiResponsesProvider(http, ProviderFactory.json)
+                    else -> OpenAiCompatProvider(http, ProviderFactory.json)
+                }
+                return provider.streamChat(routed, key ?: KEYLESS, systemPrompt, messages, tools, routedOptions)
             }
-            if (config.model !in customModelIds) return flowOf(StreamEvent.Failure(
-                "${config.model} is no longer available in Harness. Refresh the model list and choose an available model.",
-            ))
-            // Zen's free tier rejects anonymous calls, so a saved key rides
-            // out on the keyed client; the sentinel stays on the anonymous one.
-            val key = realKey(apiKey)
-            val wire = wire(config.model)
-            val baseUrl = if (wire == ProviderType.ANTHROPIC) BASE_URL.removeSuffix("/v1") else BASE_URL
-            val routed = config.copy(type = wire, baseUrl = baseUrl)
-            val routedOptions = if (options.cacheKey.isNullOrBlank()) {
-                options.copy(cacheKey = UUID.randomUUID().toString())
-            } else options
-            val http = if (key != null) keyedClient else client
-            val provider = when (wire) {
-                ProviderType.ANTHROPIC -> AnthropicProvider(http, ProviderFactory.json)
-                ProviderType.OPENAI_RESPONSES -> OpenAiResponsesProvider(http, ProviderFactory.json)
-                else -> OpenAiCompatProvider(http, ProviderFactory.json)
-            }
-            return provider.streamChat(routed, key ?: KEYLESS, systemPrompt, messages, tools, routedOptions)
         }
+
+        // Build the key-free provider pool with invisible failover
+        val entries = listOf(
+            // Zen — primary, wire-probed per model
+            ProviderPoolEntry(
+                config = ProviderConfig(
+                    id = ID,
+                    name = "Harness (Zen)",
+                    type = ProviderType.OPENAI_COMPAT,
+                    baseUrl = BASE_URL,
+                    model = DEFAULT_MODEL,
+                ),
+                provider = core,
+                visionCapable = true,
+                codingCapable = true,
+                speedScore = 60,
+            ),
+            // Kilo — independent free gateway, good failover
+            ProviderPoolEntry(
+                config = ProviderConfig(
+                    id = "harness-kilo",
+                    name = "Kilo Free",
+                    type = ProviderType.OPENAI_COMPAT,
+                    baseUrl = KILO_BASE_URL,
+                    model = DEFAULT_MODEL,
+                ),
+                provider = OpenAiCompatProvider(pooledClient, ProviderFactory.json),
+                visionCapable = true,
+                codingCapable = true,
+                speedScore = 70,
+            ),
+            // Pollinations — text-only, fast
+            ProviderPoolEntry(
+                config = ProviderConfig(
+                    id = "harness-pollinations",
+                    name = "Pollinations",
+                    type = ProviderType.OPENAI_COMPAT,
+                    baseUrl = "https://text.pollinations.ai/openai",
+                    model = "openai-fast",
+                ),
+                provider = OpenAiCompatProvider(pooledClient, ProviderFactory.json),
+                visionCapable = false,
+                codingCapable = false,
+                speedScore = 50,
+            ),
+        ) + pool.entries.map { (modelId, upstream) ->
+            ProviderPoolEntry(
+                config = ProviderConfig(
+                    id = "harness-pool-$modelId",
+                    name = "Harness Pool ($modelId)",
+                    type = ProviderType.OPENAI_COMPAT,
+                    baseUrl = upstream.baseUrl,
+                    model = modelId,
+                ),
+                provider = OpenAiCompatProvider(pooledClient, ProviderFactory.json),
+                visionCapable = listOf("vl", "vision", "omni", "4o").any { modelId.lowercase().contains(it) },
+                codingCapable = listOf("coder", "code").any { modelId.lowercase().contains(it) },
+                speedScore = 75,
+            )
+        }
+
+        return ProviderRouter.build(entries, pooledClient, ProviderFactory.json)
     }
 }
