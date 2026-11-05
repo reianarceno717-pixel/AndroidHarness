@@ -2,38 +2,29 @@ package com.androidharness.app.llm
 
 import com.androidharness.app.core.ChatMessage
 import com.androidharness.app.core.ToolCallData
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import kotlin.comparisons.compareByDescending
-import kotlin.math.min
 
 /**
- * Smart provider router with fast parallel failover.
+ * Smart provider router with fast failover.
  *
  * Strategy:
  * 1. Task-aware routing: images → vision models, code → coding models, simple → fastest
- * 2. Try providers in order of speed score, with fast failover (5s timeout per provider)
- * 3. User key providers (OpenRouter, Groq, etc.) join the pool as individual backups
- * 4. First provider to produce a complete response wins
+ * 2. Try providers in order of speed score, with fast failover
+ * 3. User key providers join the pool as individual backups
  */
 class ProviderRouter(
     private val entries: List<ProviderPoolEntry>,
     private val httpClient: OkHttpClient,
     private val json: Json,
-    private val enableParallel: Boolean = true,
+    private val factory: (ProviderType) -> LlmProvider,
 ) : LlmProvider {
 
-    private fun providerForType(type: ProviderType): LlmProvider = when (type) {
-        ProviderType.OPENAI_COMPAT -> OpenAiCompatProvider(httpClient, json)
-        ProviderType.OPENAI_RESPONSES -> OpenAiResponsesProvider(httpClient, json)
-        ProviderType.ANTHROPIC -> AnthropicProvider(httpClient, json)
-        ProviderType.GEMINI -> GeminiProvider(httpClient, json)
-    }
+    private fun providerForType(type: ProviderType): LlmProvider = factory(type)
 
     override fun streamChat(
         config: ProviderConfig,
@@ -46,7 +37,6 @@ class ProviderRouter(
         val classification = TaskClassifier.classify(messages)
         val hasImage = classification.hasImage
 
-        // Build ordered candidate list from healthy entries
         val candidates = entries
             .filter { it.isAvailable(it.cooldownMs()) }
             .filter { !hasImage || it.visionCapable }
@@ -72,7 +62,6 @@ class ProviderRouter(
             return@callbackFlow
         }
 
-        // Try providers sequentially with fast failover
         var lastError: StreamEvent.Failure? = null
 
         for (entry in candidates) {
@@ -126,29 +115,20 @@ class ProviderRouter(
             }
         }
 
-        // All providers failed
         send(lastError ?: StreamEvent.Failure("All providers unavailable.", code = 503, retryable = true))
         close()
     }
 
     companion object {
-        /** Build a router from a list of provider pool entries. */
         fun build(
             entries: List<ProviderPoolEntry>,
             httpClient: OkHttpClient,
             json: Json,
-            factory: (ProviderType) -> LlmProvider = { type -> when (type) {
-                ProviderType.OPENAI_COMPAT -> OpenAiCompatProvider(httpClient, json)
-                ProviderType.OPENAI_RESPONSES -> OpenAiResponsesProvider(httpClient, json)
-                ProviderType.ANTHROPIC -> AnthropicProvider(httpClient, json)
-                ProviderType.GEMINI -> GeminiProvider(httpClient, json)
-            } },
-            enableParallel: Boolean = true,
+            factory: (ProviderType) -> LlmProvider,
         ): ProviderRouter {
-            return ProviderRouter(entries, httpClient, json, factory, enableParallel)
+            return ProviderRouter(entries, httpClient, json, factory)
         }
 
-        /** Create default key-free pool entries (Zen, Kilo, Pollinations). */
         fun defaultKeyFreeEntries(httpClient: OkHttpClient, json: Json): List<ProviderPoolEntry> {
             val zenConfig = ProviderConfig(
                 id = "harness-zen",
