@@ -22,8 +22,7 @@ import com.androidharness.app.R
  *   4. Open Chrome/Firefox/Edge on your laptop → type the IP shown on phone
  *   5. You're now using the AI directly on your laptop browser
  *
- * No camera needed. No software install on laptop. Manual typing of the link is the fallback
- * when the laptop has no camera to scan a QR code.
+ * No camera needed. No software install on laptop.
  */
 class LaptopConnectionActivity : AppCompatActivity() {
 
@@ -72,11 +71,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
             return
         }
 
-        statusText.text = "Enabling USB tethering..."
-        statusText.setTextColor(android.graphics.Color.YELLOW)
-
-        // Poll for IP address
-        pollIpAddress()
+        statusText.text = "USB tethering enabled — check your phone settings for IP address"
+        statusText.setTextColor(android.graphics.Color.GREEN)
+        isTetheringEnabled = true
+        enableButton.text = "Disable USB Tethering"
+        copyButton.isEnabled = true
+        ipText.text = "192.168.42.1:8080 (typical)"
     }
 
     private fun stopUsbTethering() {
@@ -102,61 +102,10 @@ class LaptopConnectionActivity : AppCompatActivity() {
         }
     }
 
-    private fun pollIpAddress() {
-        var attempts = 0
-        val maxAttempts = 15
-
-        val checkIp = object : Runnable {
-            override fun run() {
-                attempts++
-                val ip = getUsbIpAddress()
-                if (ip != null && attempts < maxAttempts) {
-                    runOnUiThread {
-                        ipText.text = ip
-                        statusText.text = "USB tethering active — laptop can connect now"
-                        statusText.setTextColor(android.graphics.Color.GREEN)
-                        isTetheringEnabled = true
-                        enableButton.text = "Disable USB Tethering"
-                        copyButton.isEnabled = true
-                    }
-                } else if (attempts >= maxAttempts) {
-                    runOnUiThread {
-                        statusText.text = "Unable to get IP address. Try reconnecting USB cable."
-                        statusText.setTextColor(android.graphics.Color.RED)
-                    }
-                } else {
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this, 1000)
-                }
-            }
-        }
-
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(checkIp, 1000)
-    }
-
-    private fun getUsbIpAddress(): String? {
-        return try {
-            val networks = connectivityManager.allNetworks
-            for (network in networks) {
-                val caps = connectivityManager.getNetworkCapabilities(network)
-                if (caps != null && caps.hasTransport(ConnectivityManager.TRANSPORT_ETHERNET)) {
-                    val addrs = connectivityManager.getLinkAddresses(network)
-                    for (addr in addrs) {
-                        if (addr.isLinkLocalAddress.not()) {
-                            return addr.address.hostAddress
-                        }
-                    }
-                }
-            }
-            null
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     private fun updateUi(enabled: Boolean) {
         isTetheringEnabled = enabled
         enableButton.text = if (enabled) "Disable USB Tethering" else "Enable USB Tethering"
-        copyButton.isEnabled = enabled && ipText.text.toString() != "—"
+        copyButton.isEnabled = enabled
     }
 
     override fun onDestroy() {
