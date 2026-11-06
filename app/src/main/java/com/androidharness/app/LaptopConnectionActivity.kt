@@ -497,7 +497,15 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
         private fun writeHttpResponse(sock: Socket, status: Int, contentType: String, body: String) {
             val bytes = body.toByteArray(Charsets.UTF_8)
-            val statusText = if (status == 200) "OK" else "Error"
+            val statusText = when (status) {
+                200 -> "OK"
+                400 -> "Bad Request"
+                401 -> "Unauthorized"
+                404 -> "Not Found"
+                413 -> "Payload Too Large"
+                502 -> "Bad Gateway"
+                else -> "Error"
+            }
             val headers = "HTTP/1.1 $status $statusText\r\n" +
                 "Content-Type: $contentType\r\n" +
                 "Content-Length: ${bytes.size}\r\n" +
