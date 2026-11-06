@@ -809,11 +809,34 @@ async function refreshBridgeStatus() {
     label.textContent = data.busy
       ? "AndroidHarness · Assistant responding · " + data.messageCount + " messages"
       : "AndroidHarness · Connected · " + data.messageCount + " messages";
+    await refreshSharedChatHistory();
   } catch (_) {
     label.textContent = "AndroidHarness · Connection status unavailable";
   }
 }
 let chatRequestInFlight = false;
+async function refreshSharedChatHistory() {
+  if (chatRequestInFlight) return;
+  try {
+    const res = await apiFetch("/api/chat/history");
+    if (!res.ok) return;
+    const data = await res.json();
+    const latest = Array.isArray(data.messages) ? data.messages : [];
+    if (JSON.stringify(latest) === JSON.stringify(chatHistory)) return;
+    chatHistory = latest;
+    sessionStorage.setItem("androidHarnessChatHistory", JSON.stringify(chatHistory));
+    const box = document.getElementById("chat-box");
+    if (!box) return;
+    box.innerHTML = "";
+    chatHistory.forEach(m => {
+      const node = document.createElement("div");
+      node.className = "msg " + (m.role === "user" ? "user" : "ai");
+      node.textContent = m.content || "";
+      box.appendChild(node);
+    });
+    box.scrollTop = box.scrollHeight;
+  } catch (_) { /* Preserve the current conversation during temporary bridge failures. */ }
+}
 async function sendPrompt() {
   if (chatRequestInFlight) return;
   const input = document.getElementById("prompt-input");
