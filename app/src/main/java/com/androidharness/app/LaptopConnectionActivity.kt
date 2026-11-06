@@ -377,8 +377,9 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             }
                             contentLengthSeen = true
                             val rawLength = header.substringAfter(":").trim()
-                            contentLength = rawLength.toIntOrNull() ?: 0
-                            invalidContentLength = rawLength.isEmpty() || contentLength < 0
+                            val parsedLength = rawLength.toIntOrNull()
+                            contentLength = parsedLength ?: 0
+                            invalidContentLength = parsedLength == null || rawLength.any { !it.isDigit() }
                         }
                         header.lowercase().startsWith("transfer-encoding:") ->
                             unsupportedTransferEncoding = true
