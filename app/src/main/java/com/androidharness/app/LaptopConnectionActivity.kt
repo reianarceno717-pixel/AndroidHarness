@@ -380,6 +380,14 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
                         }
                     }
+                    method == "GET" && path == "/api/chat/history" -> {
+                        val historyFile = File(workspaceDir, ".androidharness-chat-history.json")
+                        val history = synchronized(chatHistoryLock) {
+                            runCatching { if (historyFile.isFile) JSONArray(historyFile.readText()) else JSONArray() }
+                                .getOrDefault(JSONArray())
+                        }
+                        writeHttpResponse(sock, 200, "application/json; charset=utf-8", JSONObject().put("messages", history).toString())
+                    }
                     method == "POST" && path == "/api/chat" -> {
                         val payload = JSONObject(body.ifBlank { "{}" })
                         val prompt = payload.optString("prompt").trim()
@@ -601,6 +609,25 @@ function toggleVoice() {
   rec.start();
 }
 
+async function loadChatHistory() {
+  try {
+    const res = await apiFetch("/api/chat/history");
+    if (!res.ok) return;
+    const data = await res.json();
+    chatHistory = Array.isArray(data.messages) ? data.messages : [];
+    sessionStorage.setItem("androidHarnessChatHistory", JSON.stringify(chatHistory));
+    const box = document.getElementById("chat-box");
+    box.innerHTML = "";
+    chatHistory.forEach(m => {
+      const node = document.createElement("div");
+      node.className = "msg " + (m.role === "user" ? "user" : "ai");
+      node.textContent = m.content || "";
+      box.appendChild(node);
+    });
+    box.scrollTop = box.scrollHeight;
+  } catch (_) { /* Keep the current UI if shared history is temporarily unavailable. */ }
+}
+
 async function loadFiles() {
   const res = await apiFetch("/api/files");
   const data = await res.json();
@@ -673,8 +700,8 @@ async function sendPrompt() {
     document.getElementById("model-tag").textContent = data.model || "kilo-auto/free";
     const replyText = data.reply || "Done.";
     a.textContent = replyText;
-    if (data.ok) {
-      chatHistory = [...chatHistory, { role: "user", content: text }, { role: "assistant", content: replyText }].slice(-40);
+    if (Array.isArray(data.messages)) {
+      chatHistory = data.messages;
       sessionStorage.setItem("androidHarnessChatHistory", JSON.stringify(chatHistory));
     }
     if (autoVoiceRead && window.speechSynthesis) {
@@ -689,6 +716,7 @@ async function sendPrompt() {
   box.scrollTop = box.scrollHeight;
 }
 loadFiles();
+loadChatHistory();
 </script></body></html>"""
     }
 }
