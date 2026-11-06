@@ -1,27 +1,30 @@
 package com.androidharness.app.data.audio
 
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.contentOrNull
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.Response
-import java.io.IOException
 import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.Response
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 object GroqWhisperClient {
 
@@ -122,10 +125,11 @@ object GroqWhisperClient {
     /** Keep cancellation attached until the response body has also finished reading. */
     private suspend fun executeText(client: OkHttpClient, request: Request): TextResponse = suspendCancellableCoroutine { continuation ->
         val call = client.newCall(request)
-        val responseRef = AtomicReference<Response?>(null)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        var response: Response? = null
 
         continuation.invokeOnCancellation {
-            val response = responseRef.get()
+            scope.cancel(CancellationException("Cancelled while reading Groq response"))
             response?.body?.close()
             response?.close()
             call.cancel()
@@ -136,24 +140,31 @@ object GroqWhisperClient {
                 if (continuation.isActive) continuation.resumeWithException(error)
             }
 
-            override fun onResponse(call: Call, response: Response) {
-                responseRef.set(response)
+            override fun onResponse(call: Call, responseValue: Response) {
+                response = responseValue
                 if (!continuation.isActive) {
-                    response.body?.close()
-                    response.close()
+                    responseValue.close()
                     return
                 }
 
-                try {
-                    val result = response.use {
-                        TextResponse(it.code, it.body?.string().orEmpty())
+                val body = responseValue.body ?: run {
+                    if (continuation.isActive) continuation.resume(TextResponse(responseValue.code, ""))
+                    return
+                }
+
+                scope.launch {
+                    try {
+                        val text = body.string()
+                        if (continuation.isActive) continuation.resume(TextResponse(responseValue.code, text))
+                    } catch (error: IOException) {
+                        if (continuation.isActive) continuation.resumeWithException(error)
+                    } catch (error: CancellationException) {
+                        if (continuation.isActive) continuation.resumeWithException(error)
+                    } finally {
+                        responseValue.close()
                     }
-                    if (continuation.isActive) continuation.resume(result)
-                } catch (error: Exception) {
-                    if (continuation.isActive) continuation.resumeWithException(error)
                 }
             }
         })
     }
-
 }
