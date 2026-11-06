@@ -486,7 +486,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 .put("reply", answer)
                                 .put("messages", history)
                         }
-                        writeHttpResponse(sock, 200, "application/json; charset=utf-8", replyPayload.toString())
+                        writeHttpResponse(sock, if (replyPayload.optBoolean("ok")) 200 else 502, "application/json; charset=utf-8", replyPayload.toString())
                     }
                     else -> {
                         writeHttpResponse(sock, 200, "text/html; charset=utf-8", LAPTOP_WEB_HTML)
