@@ -506,14 +506,37 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             return
                         }
                         val relPath = payload.optString("path").trim().removePrefix("/")
-                        val content = payload.optString("content")
-                        val target = File(workspaceDir, relPath).canonicalFile
-                        if (relPath.isEmpty() || isBridgeInternalPath(relPath) || !target.path.startsWith(workspaceDir.canonicalPath + File.separator)) {
-                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Invalid path"}""")
-                        } else {
-                            target.parentFile?.mkdirs()
-                            target.writeText(content)
-                            writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
+                        val contentValue = payload.opt("content")
+                        val content = contentValue as? String
+                        val target = runCatching { File(workspaceDir, relPath).canonicalFile }.getOrNull()
+                        when {
+                            relPath.isEmpty() || relPath.length > 1024 ||
+                                relPath.split('/', '\\\\').any { it == "." || it == ".." || it.isBlank() } ||
+                                isBridgeInternalPath(relPath) || target == null ||
+                                !target.path.startsWith(workspaceDir.canonicalPath + File.separator) ||
+                                content == null -> {
+                                writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Invalid file path or content"}""")
+                            }
+                            content.toByteArray(Charsets.UTF_8).size > 2 * 1024 * 1024 -> {
+                                writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"File content exceeds the 2 MB limit"}""")
+                            }
+                            target.isDirectory -> {
+                                writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Target path is a directory"}""")
+                            }
+                            else -> {
+                                val parent = target.parentFile
+                                if (parent == null || (!parent.exists() && !parent.mkdirs()) || !parent.isDirectory) {
+                                    writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Unable to create target directory"}""")
+                                } else {
+                                    runCatching { target.writeText(content, Charsets.UTF_8) }
+                                        .onSuccess {
+                                            writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
+                                        }
+                                        .onFailure {
+                                            writeHttpResponse(sock, 500, "application/json; charset=utf-8", """{"error":"Unable to save file"}""")
+                                        }
+                                }
+                            }
                         }
                     }
                     method == "GET" && path == "/api/chat/status" -> {
