@@ -799,6 +799,20 @@ async function saveCurrentFile() {
   loadFiles();
 }
 
+async function refreshBridgeStatus() {
+  const label = document.getElementById("status-meta");
+  if (!label || !authToken) return;
+  try {
+    const res = await apiFetch("/api/chat/status");
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Status unavailable");
+    label.textContent = data.busy
+      ? "AndroidHarness · Assistant responding · " + data.messageCount + " messages"
+      : "AndroidHarness · Connected · " + data.messageCount + " messages";
+  } catch (_) {
+    label.textContent = "AndroidHarness · Connection status unavailable";
+  }
+}
 let chatRequestInFlight = false;
 async function sendPrompt() {
   if (chatRequestInFlight) return;
@@ -855,6 +869,8 @@ async function sendPrompt() {
 }
 loadFiles();
 loadChatHistory();
+refreshBridgeStatus();
+setInterval(refreshBridgeStatus, 5000);
 </script></body></html>"""
     }
 }
