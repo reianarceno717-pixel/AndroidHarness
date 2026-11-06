@@ -29,6 +29,8 @@ import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
+import java.security.SecureRandom
+import android.util.Base64
 import java.util.Collections
 import java.util.concurrent.Executors
 
@@ -112,7 +114,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
     }
 
     private fun activateBridgeUi(ip: String) {
-        val url = "http://$ip:$activePort"
+        val url = "http://$ip:$activePort/?token=$bridgeToken"
         statusText.text = getString(R.string.laptop_status_tethering_on)
         statusText.setTextColor(Color.parseColor("#15803D"))
         isTetheringEnabled = true
@@ -247,6 +249,13 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
         private val executor = Executors.newCachedThreadPool()
 
+        // A per-installation bridge secret. The paired URL is shown only on the phone.
+        private val bridgeToken: String by lazy {
+            val bytes = ByteArray(32)
+            SecureRandom().nextBytes(bytes)
+            Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        }
+
         @Synchronized
         fun ensureServerRunning(appContext: Context) {
             if (serverSocket != null && serverSocket?.isClosed == false) return
@@ -285,11 +294,15 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 val query = fullPath.substringAfter("?", "")
 
                 var contentLength = 0
+                var authorization: String? = null
                 while (true) {
                     val header = reader.readLine() ?: break
                     if (header.isEmpty()) break
-                    if (header.lowercase().startsWith("content-length:")) {
-                        contentLength = header.substringAfter(":").trim().toIntOrNull() ?: 0
+                    when {
+                        header.lowercase().startsWith("content-length:") ->
+                            contentLength = header.substringAfter(":").trim().toIntOrNull() ?: 0
+                        header.lowercase().startsWith("authorization:") ->
+                            authorization = header.substringAfter(":").trim()
                     }
                 }
 
@@ -303,6 +316,11 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     }
                     String(buf, 0, read)
                 } else ""
+
+                if (path.startsWith("/api/") && authorization != "Bearer $bridgeToken") {
+                    writeHttpResponse(sock, 401, "application/json; charset=utf-8", """{"error":"Unauthorized. Open the paired link shown in AndroidHarness."}""")
+                    return
+                }
 
                 when {
                     method == "GET" && path == "/api/ping" -> {
@@ -411,7 +429,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
             val headers = "HTTP/1.1 $status $statusText\r\n" +
                 "Content-Type: $contentType\r\n" +
                 "Content-Length: ${bytes.size}\r\n" +
-                "Access-Control-Allow-Origin: *\r\n" +
+                "Cache-Control: no-store\r\n" +
                 "Connection: close\r\n\r\n"
             val out = sock.getOutputStream()
             out.write(headers.toByteArray(Charsets.UTF_8))
@@ -495,6 +513,17 @@ class LaptopConnectionActivity : AppCompatActivity() {
   </section>
 </main>
 <script>
+const bridgeToken = new URLSearchParams(location.search).get("token") || "";
+if (bridgeToken) {
+  sessionStorage.setItem("androidHarnessBridgeToken", bridgeToken);
+  history.replaceState(null, "", location.pathname);
+}
+const sessionToken = sessionStorage.getItem("androidHarnessBridgeToken") || "";
+async function apiFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  headers.set("Authorization", "Bearer " + sessionToken);
+  return fetch(url, { ...options, headers });
+}
 let activeFilePath = "";
 let autoVoiceRead = true;
 let isRecognizing = false;
@@ -537,7 +566,7 @@ function toggleVoice() {
 }
 
 async function loadFiles() {
-  const res = await fetch("/api/files");
+  const res = await apiFetch("/api/files");
   const data = await res.json();
   const list = document.getElementById("file-list");
   list.innerHTML = "";
@@ -557,7 +586,7 @@ async function loadFiles() {
 async function openFile(path) {
   activeFilePath = path;
   document.getElementById("current-file").textContent = path;
-  const res = await fetch("/api/file?path=" + encodeURIComponent(path));
+  const res = await apiFetch("/api/file?path=" + encodeURIComponent(path));
   const data = await res.json();
   document.getElementById("editor").value = data.content || "";
   loadFiles();
@@ -575,7 +604,7 @@ async function createNewFile() {
 
 async function saveCurrentFile() {
   if (!activeFilePath) { activeFilePath = "index.html"; document.getElementById("current-file").textContent = activeFilePath; }
-  await fetch("/api/file", {
+  await apiFetch("/api/file", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ path: activeFilePath, content: document.getElementById("editor").value })
@@ -599,7 +628,7 @@ async function sendPrompt() {
   box.appendChild(a);
   box.scrollTop = box.scrollHeight;
   try {
-    const res = await fetch("/api/chat", {
+    const res = await apiFetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ prompt: text })
