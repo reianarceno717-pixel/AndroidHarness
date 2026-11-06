@@ -248,6 +248,7 @@ class FloatingBubbleService : Service() {
                     windowManager.updateViewLayout(root, params)
                     true
                 }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
                 else -> false
             }
         }
@@ -383,8 +384,6 @@ class FloatingBubbleService : Service() {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
             setPadding(dp(8), dp(8), dp(4), dp(2))
         }
-        var resizeWidth = width
-        var resizeHeight = height
         var resizeStartX = 0f
         var resizeStartY = 0f
         var resizeInitialWidth = width
