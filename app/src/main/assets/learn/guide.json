@@ -5087,6 +5087,64 @@
       "keywords": ""
     },
     {
+      "id": "laptop-bridge",
+      "category": "personal",
+      "title": "Use AndroidHarness on your laptop",
+      "summary": "Connect your phone to your laptop over USB and use the app in a browser.",
+      "location": "Settings → Laptop bridge → open the shown address in your laptop browser.",
+      "before": [
+        "Connect your phone to your laptop with a Type-C charging cable.",
+        "The laptop does not need anything installed; it uses a browser."
+      ],
+      "steps": [
+        {
+          "title": "Connect the cable",
+          "body": "Plug your phone into your laptop with the Type-C charging cable."
+        },
+        {
+          "title": "Open the laptop bridge",
+          "body": "Open Settings → Laptop bridge on your phone, then tap \"Open laptop connection\"."
+        },
+        {
+          "title": "Enable USB tethering",
+          "body": "The screen will show the phone's IP address. Open Android Settings → Network → Hotspot & tethering and enable USB tethering."
+        },
+        {
+          "title": "Open on your laptop",
+          "body": "On your laptop, open Chrome, Firefox, or Edge and type the IP address shown on your phone (e.g., http://192.168.42.1:8080)."
+        }
+      ],
+      "outcome": "AndroidHarness opens in your laptop browser with the full interface.",
+      "limits": [
+        "USB tethering must be supported by your phone and laptop.",
+        "No camera is needed and nothing is installed on the laptop."
+      ],
+      "fixes": [
+        {
+          "problem": "The laptop browser shows an error",
+          "solution": "Check that USB tethering is enabled and the IP address is typed exactly as shown."
+        }
+      ],
+      "related": [
+        "startup",
+        "environment",
+        "connected-accounts"
+      ],
+      "actions": [
+        {
+          "kind": "settings",
+          "target": "LAPTOP",
+          "label": "Open laptop bridge"
+        }
+      ],
+      "sources": [
+        "ui/settings/LaptopConnectionActivity.kt",
+        "ui/settings/LaptopSection.kt",
+        "ui/settings/SettingsNavigation.kt"
+      ],
+      "keywords": "laptop desktop computer usb tethering remote bridge"
+    },
+    {
       "id": "settings-backup",
       "category": "data",
       "title": "Back up settings and connections",
