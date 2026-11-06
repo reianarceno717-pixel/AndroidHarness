@@ -248,6 +248,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
             private set
 
         private val executor = Executors.newCachedThreadPool()
+        private val chatHistoryLock = Any()
 
         // A per-installation bridge secret. The paired URL is shown only on the phone.
         internal fun localBridgeAuthorization(): String = "Bearer $bridgeToken"
@@ -383,11 +384,20 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         val payload = JSONObject(body.ifBlank { "{}" })
                         val prompt = payload.optString("prompt").trim()
                         val model = payload.optString("model").ifBlank { HarnessProvider.DEFAULT_MODEL }
-                        val historyJson = payload.optJSONArray("messages")
-                        val conversation = mutableListOf<ChatMessage>()
-                        if (historyJson != null) {
-                            for (i in 0 until historyJson.length()) {
-                                val item = historyJson.optJSONObject(i) ?: continue
+                        if (prompt.isEmpty()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Empty prompt"}""")
+                            return
+                        }
+                        val replyPayload = synchronized(chatHistoryLock) {
+                            val historyFile = File(workspaceDir, ".androidharness-chat-history.json")
+                            val history = runCatching {
+                                if (historyFile.isFile) JSONArray(historyFile.readText()) else JSONArray()
+                            }.getOrDefault(JSONArray())
+                            history.put(JSONObject().put("role", "user").put("content", prompt))
+                            while (history.length() > 40) history.remove(0)
+                            val conversation = mutableListOf<ChatMessage>()
+                            for (i in 0 until history.length()) {
+                                val item = history.optJSONObject(i) ?: continue
                                 val text = item.optString("content").take(32_000)
                                 val role = when (item.optString("role").lowercase()) {
                                     "assistant" -> Role.ASSISTANT
@@ -396,42 +406,49 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 }
                                 if (text.isNotBlank()) conversation += ChatMessage(role = role, text = text)
                             }
-                        }
-                        if (conversation.isEmpty() && prompt.isNotEmpty()) conversation += ChatMessage(role = Role.USER, text = prompt)
-                        if (prompt.isEmpty() && conversation.isEmpty()) {
-                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Empty prompt"}""")
-                            return
-                        }
-                        val reply = StringBuilder()
-                        val thoughts = StringBuilder()
-                        var activeModel = model
-                        var errorMsg: String? = null
-                        runBlocking {
-                            val provider = HarnessProvider.create()
-                            val cfg = HarnessProvider.config.copy(model = model)
-                            provider.streamChat(
-                                config = cfg,
-                                apiKey = HarnessProvider.KEYLESS,
-                                systemPrompt = "You are AndroidHarness running live on the user's Android phone and connected to their laptop browser over local bridge.",
-                                messages = conversation,
-                                tools = emptyList(),
-                                options = RequestOptions(),
-                            ).collect { event ->
-                                when (event) {
-                                    is StreamEvent.TextDelta -> reply.append(event.text)
-                                    is StreamEvent.ThinkingDelta -> thoughts.append(event.text)
-                                    is StreamEvent.ProviderChanged -> activeModel = event.config.model
-                                    is StreamEvent.Failure -> errorMsg = event.message
-                                    else -> {}
+                            val reply = StringBuilder()
+                            val thoughts = StringBuilder()
+                            var activeModel = model
+                            var errorMsg: String? = null
+                            runBlocking {
+                                val provider = HarnessProvider.create()
+                                val cfg = HarnessProvider.config.copy(model = model)
+                                provider.streamChat(
+                                    config = cfg,
+                                    apiKey = HarnessProvider.KEYLESS,
+                                    systemPrompt = "You are AndroidHarness running live on the user's Android phone and connected to its paired remote interfaces. Continue the shared conversation naturally.",
+                                    messages = conversation,
+                                    tools = emptyList(),
+                                    options = RequestOptions(),
+                                ).collect { event ->
+                                    when (event) {
+                                        is StreamEvent.TextDelta -> reply.append(event.text)
+                                        is StreamEvent.ThinkingDelta -> thoughts.append(event.text)
+                                        is StreamEvent.ProviderChanged -> activeModel = event.config.model
+                                        is StreamEvent.Failure -> errorMsg = event.message
+                                        else -> {}
+                                    }
                                 }
                             }
+                            val answer = if (reply.isNotEmpty()) reply.toString() else (errorMsg ?: "No response")
+                            if (reply.isNotEmpty()) {
+                                history.put(JSONObject().put("role", "assistant").put("content", answer))
+                                while (history.length() > 40) history.remove(0)
+                                val temp = File(historyFile.parentFile, historyFile.name + ".next")
+                                temp.writeText(history.toString())
+                                if (!temp.renameTo(historyFile)) {
+                                    temp.delete()
+                                    historyFile.writeText(history.toString())
+                                }
+                            }
+                            JSONObject()
+                                .put("ok", errorMsg == null || reply.isNotEmpty())
+                                .put("model", activeModel)
+                                .put("thinking", thoughts.toString())
+                                .put("reply", answer)
+                                .put("messages", history)
                         }
-                        val res = JSONObject()
-                            .put("ok", errorMsg == null || reply.isNotEmpty())
-                            .put("model", activeModel)
-                            .put("thinking", thoughts.toString())
-                            .put("reply", if (reply.isNotEmpty()) reply.toString() else (errorMsg ?: "No response"))
-                        writeHttpResponse(sock, 200, "application/json; charset=utf-8", res.toString())
+                        writeHttpResponse(sock, 200, "application/json; charset=utf-8", replyPayload.toString())
                     }
                     else -> {
                         writeHttpResponse(sock, 200, "text/html; charset=utf-8", LAPTOP_WEB_HTML)
