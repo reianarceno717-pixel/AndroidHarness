@@ -44,7 +44,6 @@ import com.androidharness.app.data.update.UpdateIntents
 import com.androidharness.app.ui.AppNav
 import com.androidharness.app.ui.common.RefreshRate
 import com.androidharness.app.ui.theme.HarnessTheme
-import com.androidharness.app.ui.update.UpdateDialog
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle

@@ -204,6 +204,12 @@ internal enum class SettingsPage(
         R.string.settings_group_workspace_device,
         "storage cleanup disk space cache packages downloads build outputs",
     ),
+    LAPTOP(
+        R.string.settings_page_laptop_title,
+        R.string.settings_page_laptop_desc,
+        R.string.settings_group_connections,
+        "laptop desktop pc computer usb tethering browser virtual install bridge remote use on laptop",
+    ),
     ENVIRONMENT(
         R.string.settings_page_environment_title,
         R.string.settings_page_environment_desc,
@@ -290,7 +296,7 @@ internal val settingsHomePages = listOf(
     SettingsPage.MODELS, SettingsPage.LOCAL_MODELS, SettingsPage.VOICE, SettingsPage.LIVE_MODE,
     SettingsPage.GITHUB, SettingsPage.SEARCH, SettingsPage.MCP,
     SettingsPage.TELEGRAM, SettingsPage.SYNC, SettingsPage.FTP_SERVER,
-    SettingsPage.BACKGROUND, SettingsPage.STORAGE,
+    SettingsPage.BACKGROUND, SettingsPage.STORAGE, SettingsPage.LAPTOP,
     SettingsPage.BACKUP, SettingsPage.USAGE, SettingsPage.TROUBLESHOOTING,
     SettingsPage.UPDATES, SettingsPage.SETUP, SettingsPage.ABOUT,
 )

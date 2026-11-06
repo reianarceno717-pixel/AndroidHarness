@@ -272,6 +272,7 @@ internal fun settingsIcon(page: SettingsPage): ImageVector = when (page) {
     SettingsPage.WORKSPACE -> Icons.Outlined.Folder
     SettingsPage.BACKGROUND -> Icons.Outlined.Notifications
     SettingsPage.STORAGE -> Icons.Outlined.Storage
+    SettingsPage.LAPTOP -> Icons.Outlined.Computer
     SettingsPage.ENVIRONMENT -> Icons.Outlined.Terminal
     SettingsPage.TROUBLESHOOTING -> Icons.Outlined.Build
     SettingsPage.BACKUP -> Icons.Outlined.Archive
