@@ -524,7 +524,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 "X-Content-Type-Options: nosniff\r\n" +
                 "X-Frame-Options: DENY\r\n" +
                 "Referrer-Policy: no-referrer\r\n" +
-                "Content-Security-Policy: default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:;\r\n" +
+                "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss:; img-src 'self' data: blob:; media-src 'self' blob:;\r\n" +
                 "Connection: close\r\n\r\n"
             val out = sock.getOutputStream()
             out.write(headers.toByteArray(Charsets.UTF_8))
