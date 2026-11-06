@@ -497,6 +497,20 @@ class FloatingBubbleService : Service() {
         messageBox.text = "You: $prompt\n\nAI Team working..."
         scope.launch {
             try {
+                // Refresh the shared bridge transcript first so prompts from the
+                // browser and overlay use the same recent conversation context.
+                val shared = withContext(Dispatchers.IO) { loadSharedChatHistory() }
+                if (shared != null) {
+                    conversationHistory.clear()
+                    for (i in 0 until shared.length()) {
+                        val item = shared.optJSONObject(i) ?: continue
+                        val role = item.optString("role")
+                        val text = item.optString("content")
+                        if ((role == "user" || role == "assistant") && text.isNotBlank()) {
+                            conversationHistory += role to text
+                        }
+                    }
+                }
                 conversationHistory += "user" to prompt
                 val reply = withContext(Dispatchers.IO) {
                     queryLocalOrRemoteModel(prompt, conversationHistory.toList())
