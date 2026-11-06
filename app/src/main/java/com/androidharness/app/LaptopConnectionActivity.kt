@@ -480,22 +480,34 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         writeHttpResponse(sock, 200, "application/json; charset=utf-8", json.toString())
                     }
                     method == "GET" && path == "/api/file" -> {
-                        val relPath = query.split("&")
-                            .map { it.split("=", limit = 2) }
-                            .firstOrNull { it.firstOrNull() == "path" }
-                            ?.getOrNull(1)
-                            ?.let { URLDecoder.decode(it, "UTF-8") }
-                            .orEmpty()
-                        val target = File(workspaceDir, relPath).canonicalFile
-                        if (isBridgeInternalPath(relPath) || !target.path.startsWith(workspaceDir.canonicalPath + File.separator) || !target.isFile) {
-                            writeHttpResponse(sock, 404, "application/json; charset=utf-8", """{"error":"File not found"}""")
-                        } else if (target.length() > 2 * 1024 * 1024) {
-                            writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"File exceeds the 2 MB preview limit"}""")
-                        } else {
-                            val json = JSONObject()
-                                .put("path", relPath)
-                                .put("content", target.readText())
-                            writeHttpResponse(sock, 200, "application/json; charset=utf-8", json.toString())
+                        val relPath = runCatching {
+                            query.split("&")
+                                .map { it.split("=", limit = 2) }
+                                .firstOrNull { it.firstOrNull() == "path" }
+                                ?.getOrNull(1)
+                                ?.let { URLDecoder.decode(it, "UTF-8") }
+                                .orEmpty()
+                        }.getOrNull()
+                        val target = relPath?.let { runCatching { File(workspaceDir, it).canonicalFile }.getOrNull() }
+                        when {
+                            relPath.isNullOrBlank() || target == null || isBridgeInternalPath(relPath) ||
+                                !target.path.startsWith(workspaceDir.canonicalPath + File.separator) || !target.isFile -> {
+                                writeHttpResponse(sock, 404, "application/json; charset=utf-8", """{"error":"File not found"}""")
+                            }
+                            target.length() > 2 * 1024 * 1024 -> {
+                                writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"File exceeds the 2 MB preview limit"}""")
+                            }
+                            else -> {
+                                runCatching {
+                                    JSONObject()
+                                        .put("path", relPath)
+                                        .put("content", target.readText(Charsets.UTF_8))
+                                }.onSuccess { json ->
+                                    writeHttpResponse(sock, 200, "application/json; charset=utf-8", json.toString())
+                                }.onFailure {
+                                    writeHttpResponse(sock, 500, "application/json; charset=utf-8", """{"error":"Unable to read file"}""")
+                                }
+                            }
                         }
                     }
                     method == "POST" && path == "/api/file" -> {
