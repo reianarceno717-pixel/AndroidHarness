@@ -432,6 +432,7 @@ class FloatingBubbleService : Service() {
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Authorization", LaptopConnectionActivity.localBridgeAuthorization())
             conn.doOutput = true
             conn.connectTimeout = 8000
             conn.readTimeout = 15000
@@ -439,7 +440,9 @@ class FloatingBubbleService : Service() {
             val json = org.json.JSONObject().put("prompt", prompt).toString()
             conn.outputStream.use { it.write(json.toByteArray(Charsets.UTF_8)) }
 
-            val response = conn.inputStream.bufferedReader().use { it.readText() }
+            val responseStream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+            val response = responseStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (conn.responseCode !in 200..299) return "AndroidHarness bridge error (HTTP ${conn.responseCode}): ${response.take(240)}"
             val resObj = org.json.JSONObject(response)
             resObj.optString("reply", "Done.")
         } catch (_: Exception) {
