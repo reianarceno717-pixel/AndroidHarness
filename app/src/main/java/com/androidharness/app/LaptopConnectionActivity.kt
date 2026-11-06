@@ -340,7 +340,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     return
                 }
                 val parts = requestLine.split(" ")
-                if (parts.size < 2) return
+                if (parts.size != 3 || parts.any { it.isBlank() } ||
+                    (parts[2] != "HTTP/1.0" && parts[2] != "HTTP/1.1") ||
+                    !parts[1].startsWith("/") || parts[1].contains('\\')) {
+                    writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed HTTP request line"}""")
+                    return
+                }
                 val method = parts[0].uppercase()
                 val fullPath = parts[1]
                 val path = fullPath.substringBefore("?")
@@ -348,6 +353,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
                 var contentLength = 0
                 var contentLengthSeen = false
+                var invalidContentLength = false
                 var unsupportedTransferEncoding = false
                 var authorization: String? = null
                 var authorizationSeen = false
@@ -370,7 +376,9 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 return
                             }
                             contentLengthSeen = true
-                            contentLength = header.substringAfter(":").trim().toIntOrNull() ?: -1
+                            val rawLength = header.substringAfter(":").trim()
+                            contentLength = rawLength.toIntOrNull() ?: 0
+                            invalidContentLength = rawLength.isEmpty() || contentLength < 0
                         }
                         header.lowercase().startsWith("transfer-encoding:") ->
                             unsupportedTransferEncoding = true
@@ -402,7 +410,11 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Transfer-Encoding is not supported by this bridge"}""")
                     return
                 }
-                if (contentLength < 0 || contentLength > 2 * 1024 * 1024) {
+                if (invalidContentLength) {
+                    writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Invalid Content-Length header"}""")
+                    return
+                }
+                if (contentLength > 2 * 1024 * 1024) {
                     writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"Request body exceeds the 2 MB limit"}""")
                     return
                 }
