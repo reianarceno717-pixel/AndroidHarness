@@ -11,11 +11,13 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.timeout
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -26,6 +28,8 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -54,7 +58,7 @@ object HarnessProvider {
     const val POLLINATIONS_NOTE = "Pollinations · Public"
     const val SESSION_HEADER = "x-opencode-session"
     const val REQUEST_HEADER = "x-opencode-request"
-    const val USER_AGENT = "AndroidHarness/1.0"
+    const val USER_AGENT = "AndroidHarness"
 
     /** Per-candidate timeout before invisibly failing over to the next fast model in the pool. */
     private const val CANDIDATE_TIMEOUT_MS = 14_000L
@@ -71,149 +75,23 @@ object HarnessProvider {
 
     val pollinations = ModelEntry(
         id = "openai-fast",
-        name = "Pollinations Fast (Free)",
-        contextWindow = 128_000,
-        maxOutput = 8_192,
-        reasoning = false,
-        imageInput = false,
-        tools = true,
-        free = true,
-        inputPrice = 0.0,
-        outputPrice = 0.0,
         note = POLLINATIONS_NOTE,
+        tools = true,
+        imageInput = false,
+        reasoning = false,
     )
 
     val defaultKiloModels: List<ModelEntry> = listOf(
-        ModelEntry(
-            id = DEFAULT_MODEL,
-            name = "Harness Free (Auto)",
-            contextWindow = 204_800,
-            maxOutput = 65_536,
-            reasoning = true,
-            imageInput = true,
-            tools = true,
-            free = true,
-            inputPrice = 0.0,
-            outputPrice = 0.0,
-            note = KILO_NOTE,
-        ),
-        ModelEntry(
-            id = "cohere/north-mini-code:free",
-            name = "Cohere North Mini Code (Free)",
-            contextWindow = 256_000,
-            maxOutput = 32_768,
-            reasoning = true,
-            imageInput = false,
-            tools = true,
-            free = true,
-            inputPrice = 0.0,
-            outputPrice = 0.0,
-            note = KILO_NOTE,
-        ),
-        ModelEntry(
-            id = "nvidia/nemotron-3.5-super-vl:free",
-            name = "Nemotron 3.5 Super VL (Free)",
-            contextWindow = 262_144,
-            maxOutput = 32_768,
-            reasoning = true,
-            imageInput = true,
-            tools = true,
-            free = true,
-            inputPrice = 0.0,
-            outputPrice = 0.0,
-            note = KILO_NOTE,
-        ),
-        ModelEntry(
-            id = "nvidia/nemotron-3.5-lightning:free",
-            name = "Nemotron 3.5 Lightning (Free)",
-            contextWindow = 131_072,
-            maxOutput = 32_768,
-            reasoning = true,
-            imageInput = false,
-            tools = true,
-            free = true,
-            inputPrice = 0.0,
-            outputPrice = 0.0,
-            note = KILO_NOTE,
-        ),
-        ModelEntry(
-            id = "reflection/beam-free",
-            name = "Reflection Beam (Free)",
-            contextWindow = 163_840,
-            maxOutput = 32_768,
-            reasoning = true,
-            imageInput = false,
-            tools = true,
-            free = true,
-            inputPrice = 0.0,
-            outputPrice = 0.0,
-            note = KILO_NOTE,
-        ),
-        ModelEntry(
-            id = "dots-studio/dots-3-note-preview:free",
-            name = "Dots 3 Note Preview (Free)",
-            contextWindow = 131_072,
-            maxOutput = 32_768,
-            reasoning = true,
-            imageInput = true,
-            tools = true,
-            free = true,
-            inputPrice = 0.0,
-            outputPrice = 0.0,
-            note = KILO_NOTE,
-        ),
-        ModelEntry(
-            id = "xiaomi/mimo-v2-pro:free",
-            name = "MiMo V2 Pro (Free)",
-            contextWindow = 262_144,
-            maxOutput = 65_536,
-            reasoning = true,
-            imageInput = false,
-            tools = true,
-            free = true,
-            inputPrice = 0.0,
-            outputPrice = 0.0,
-            note = KILO_NOTE,
-        ),
-        ModelEntry(
-            id = "xiaomi/mimo-v2-omni:free",
-            name = "MiMo V2 Omni (Free)",
-            contextWindow = 262_144,
-            maxOutput = 65_536,
-            reasoning = true,
-            imageInput = true,
-            tools = true,
-            free = true,
-            inputPrice = 0.0,
-            outputPrice = 0.0,
-            note = KILO_NOTE,
-        ),
-        ModelEntry(
-            id = "z-ai/glm-5.1:free",
-            name = "GLM 5.1 (Free)",
-            contextWindow = 202_752,
-            maxOutput = 65_536,
-            reasoning = true,
-            imageInput = false,
-            tools = true,
-            free = true,
-            inputPrice = 0.0,
-            outputPrice = 0.0,
-            note = KILO_NOTE,
-        ),
-        ModelEntry(
-            id = "minimax/minimax-m2.7:free",
-            name = "MiniMax M2.7 (Free)",
-            contextWindow = 204_800,
-            maxOutput = 131_072,
-            reasoning = true,
-            imageInput = false,
-            tools = true,
-            free = true,
-            inputPrice = 0.0,
-            outputPrice = 0.0,
-            note = KILO_NOTE,
-        ),
+        ModelEntry(id = DEFAULT_MODEL, note = KILO_NOTE, reasoning = true, imageInput = true, tools = true),
+        ModelEntry(id = "cohere/north-mini-code:free", note = KILO_NOTE, reasoning = true, imageInput = false, tools = true),
+        ModelEntry(id = "nvidia/nemotron-3.5-super-vl:free", note = KILO_NOTE, reasoning = true, imageInput = true, tools = true),
+        ModelEntry(id = "nvidia/nemotron-3.5-lightning:free", note = KILO_NOTE, reasoning = true, imageInput = false, tools = true),
+        ModelEntry(id = "reflection/beam-free", note = KILO_NOTE, reasoning = true, imageInput = false, tools = true),
+        ModelEntry(id = "dots-studio/dots-3-note-preview:free", note = KILO_NOTE, reasoning = true, imageInput = true, tools = true),
+        ModelEntry(id = "xiaomi/mimo-v2-pro:free", note = KILO_NOTE, reasoning = true, imageInput = false, tools = true),
+        ModelEntry(id = "xiaomi/mimo-v2-omni:free", note = KILO_NOTE, reasoning = true, imageInput = true, tools = true),
+        ModelEntry(id = "z-ai/glm-5.1:free", note = KILO_NOTE, reasoning = true, imageInput = false, tools = true),
+        ModelEntry(id = "minimax/minimax-m2.7:free", note = KILO_NOTE, reasoning = true, imageInput = false, tools = true),
     )
 
     /** Live-benchmarked sub-second models tried first during auto-routing and failover. */
@@ -236,7 +114,7 @@ object HarnessProvider {
     val fallbackModels: List<ModelEntry> = models(defaultKiloModels)
 
     @Volatile
-    var pins: Map<String, ProviderType> = emptyMap()
+    var pins: Map<String, String> = emptyMap()
 
     @Volatile
     var customModels: List<ModelEntry> = emptyList()
@@ -276,7 +154,7 @@ object HarnessProvider {
         }
         val base = normalizedKilo + pollinations
         val custom = customModels.filter { c -> base.none { it.id == c.id } }
-        return base + custom
+        return (base + custom).distinctBy { it.id }
     }
 
     fun restoreModels(entries: List<ModelEntry>) {
@@ -286,20 +164,24 @@ object HarnessProvider {
 
     fun isPooled(model: String): Boolean = pool.containsKey(model)
 
-    fun sanitize(model: String): String = sanitize(model, customModelIds)
+    fun sanitize(model: String?): String = sanitize(model, customModelIds)
 
-    fun sanitize(model: String, customIds: Set<String>): String {
-        if (model.isBlank()) return pooledModels.firstOrNull()?.id ?: DEFAULT_MODEL
+    fun sanitize(model: String?, customIds: Set<String>): String {
+        if (model.isNullOrBlank()) return pooledModels.firstOrNull()?.id ?: DEFAULT_MODEL
         if (isPooled(model) || model in customIds) return model
         return pooledModels.firstOrNull()?.id ?: DEFAULT_MODEL
     }
 
-    fun wire(model: String): ProviderType =
-        pins[model] ?: when {
+    fun wire(model: String): ProviderType = when (pins[model]) {
+        ProviderType.ANTHROPIC.name, ProviderType.ANTHROPIC.label -> ProviderType.ANTHROPIC
+        ProviderType.OPENAI_RESPONSES.name, ProviderType.OPENAI_RESPONSES.label -> ProviderType.OPENAI_RESPONSES
+        ProviderType.OPENAI_COMPAT.name, ProviderType.OPENAI_COMPAT.label -> ProviderType.OPENAI_COMPAT
+        else -> when {
             model.startsWith("claude-") -> ProviderType.ANTHROPIC
             model.startsWith("gpt-5") -> ProviderType.OPENAI_RESPONSES
             else -> ProviderType.OPENAI_COMPAT
         }
+    }
 
     fun isOpenCode(config: ProviderConfig): Boolean =
         config.id == ID ||
@@ -321,8 +203,10 @@ object HarnessProvider {
         return builder
             .header(SESSION_HEADER, resolvedSession)
             .header(REQUEST_HEADER, resolvedRequest)
+            .header("x-opencode-request", resolvedRequest)
             .header("x-opencode-client", "harness")
             .header("x-opencode-project", "default")
+            .header("User-Agent", USER_AGENT)
     }
 
     fun anonymous(request: Request): Request {
@@ -331,6 +215,8 @@ object HarnessProvider {
             .removeHeader("Authorization")
             .removeHeader("x-api-key")
             .removeHeader("x-goog-api-key")
+            .header("HTTP-Referer", "https://github.com/Sanuu7/AndroidHarness")
+            .header("X-Title", "Harness")
         withSession(builder, existingSession)
         return builder.build()
     }
@@ -358,10 +244,10 @@ object HarnessProvider {
     fun selectVisionModel(preferredModel: String): String {
         if (visionCapable(preferredModel) && preferredModel != DEFAULT_MODEL) return preferredModel
         val fastVision = pooledModels.firstOrNull {
-            it.id == "nvidia/nemotron-3.5-super-vl:free" && it.imageInput
+            it.id == "nvidia/nemotron-3.5-super-vl:free" && (it.imageInput == true || visionCapable(it.id))
         }
         if (fastVision != null) return fastVision.id
-        val anyVision = pooledModels.firstOrNull { it.imageInput && visionCapable(it.id) }
+        val anyVision = pooledModels.firstOrNull { it.imageInput == true || visionCapable(it.id) }
         return anyVision?.id ?: DEFAULT_MODEL
     }
 
@@ -388,7 +274,7 @@ object HarnessProvider {
                     .addInterceptor { chain ->
                         val req = chain.request().newBuilder()
                             .removeHeader("Authorization")
-                            .header("User-Agent", "AndroidHarness")
+                            .header("User-Agent", USER_AGENT)
                             .build()
                         chain.proceed(req)
                     }
@@ -518,8 +404,6 @@ object HarnessProvider {
                 addKiloCandidate("dots-studio/dots-3-note-preview:free")
                 addKiloCandidate(DEFAULT_MODEL)
             } else {
-                // When set to the default auto-router ("kilo-auto/free"), route directly to the fastest
-                // verified sub-second coding & tool models first.
                 if (config.model != DEFAULT_MODEL && pool.containsKey(config.model)) {
                     addKiloCandidate(config.model)
                 }
@@ -586,9 +470,6 @@ object HarnessProvider {
                                         send(event)
                                     }
                                     else -> {
-                                        // Buffer ThinkingConfigured, ThinkingDelta, ToolCallDelta, Usage, etc.
-                                        // until this candidate commits real output, so mid-thinking stalls can
-                                        // invisibly fail over to the next candidate with zero UI leakage.
                                         if (committedOutput) {
                                             send(event)
                                         } else {
@@ -630,8 +511,6 @@ object HarnessProvider {
                         markUpstreamCooldown(candidate.key)
                     }
 
-                    // Only abort failover if real text or completed tool calls were already committed to the UI,
-                    // or if every candidate in the pool has been exhausted.
                     if (committedOutput || index == orderedCandidates.lastIndex) {
                         send(lastFailure ?: StreamEvent.Failure("All Harness gateways failed"))
                         return@channelFlow
@@ -639,6 +518,49 @@ object HarnessProvider {
                 }
             }
         }
+    }
+
+    /** Kilo declares free access explicitly; a :free suffix alone is insufficient. */
+    fun parseKiloCatalog(body: String): List<ModelEntry> {
+        val root = runCatching { ProviderFactory.json.parseToJsonElement(body).jsonObject }.getOrNull()
+            ?: return emptyList()
+        val data = root["data"]?.jsonArrayOrAbsent() ?: return emptyList()
+        val allowed = data.mapNotNull { element ->
+            val entry = element as? JsonObject ?: return@mapNotNull null
+            if (entry["isFree"]?.jsonPrimitive?.booleanOrNull != true &&
+                entry["free"]?.jsonPrimitive?.booleanOrNull != true) return@mapNotNull null
+            val supportsTools = entry["supported_parameters"]?.jsonArrayOrAbsent()
+                ?.any { it.jsonPrimitive.contentOrNull == "tools" } == true ||
+                entry["tools"]?.jsonPrimitive?.booleanOrNull == true
+            if (!supportsTools) return@mapNotNull null
+            entry["id"]?.jsonPrimitive?.contentOrNull
+        }.toSet()
+        val entries = ModelCatalog.parseCatalog(ProviderType.OPENAI_COMPAT, body)
+            .filter { it.id in allowed }.map { it.copy(note = KILO_NOTE) }
+        return models(entries)
+    }
+
+    /** Probes a custom model's actual API wire type by making a test request. */
+    suspend fun probeWire(modelId: String, apiKey: String? = null): ProviderType? = withContext(Dispatchers.IO) {
+        val client = poolClient.newBuilder().connectTimeout(10, TimeUnit.SECONDS).build()
+        val request = Request.Builder()
+            .url(KILO_BASE_URL + "/models")
+            .header("User-Agent", USER_AGENT)
+            .build()
+        try {
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext wire(modelId)
+                val body = resp.body?.string() ?: return@withContext wire(modelId)
+                val entries = parseKiloCatalog(body)
+                val entry = entries.firstOrNull { it.id == modelId }
+                if (entry != null) {
+                    return@withContext wire(modelId)
+                }
+            }
+        } catch (_: Exception) {
+            return@withContext wire(modelId)
+        }
+        return@withContext wire(modelId)
     }
 
     fun loadSavedCustomModels(file: File) {
@@ -650,15 +572,9 @@ object HarnessProvider {
                 val id = (obj["id"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
                 ModelEntry(
                     id = id,
-                    name = (obj["name"] as? JsonPrimitive)?.contentOrNull ?: id,
-                    contextWindow = (obj["contextWindow"] as? JsonPrimitive)?.intOrNull ?: 128_000,
-                    maxOutput = (obj["maxOutput"] as? JsonPrimitive)?.intOrNull ?: 16_384,
                     reasoning = (obj["reasoning"] as? JsonPrimitive)?.booleanOrNull ?: false,
                     imageInput = (obj["imageInput"] as? JsonPrimitive)?.booleanOrNull ?: false,
                     tools = (obj["tools"] as? JsonPrimitive)?.booleanOrNull ?: true,
-                    free = (obj["free"] as? JsonPrimitive)?.booleanOrNull ?: true,
-                    inputPrice = (obj["inputPrice"] as? JsonPrimitive)?.doubleOrNull ?: 0.0,
-                    outputPrice = (obj["outputPrice"] as? JsonPrimitive)?.doubleOrNull ?: 0.0,
                     note = (obj["note"] as? JsonPrimitive)?.contentOrNull,
                 )
             }
@@ -688,15 +604,10 @@ object HarnessProvider {
                     JsonObject(
                         buildMap {
                             put("id", JsonPrimitive(m.id))
-                            put("name", JsonPrimitive(m.name))
-                            put("contextWindow", JsonPrimitive(m.contextWindow))
-                            put("maxOutput", JsonPrimitive(m.maxOutput))
-                            put("reasoning", JsonPrimitive(m.reasoning))
-                            put("imageInput", JsonPrimitive(m.imageInput))
-                            put("tools", JsonPrimitive(m.tools))
-                            put("free", JsonPrimitive(m.free))
-                            m.inputPrice?.let { put("inputPrice", JsonPrimitive(it)) }
-                            m.outputPrice?.let { put("outputPrice", JsonPrimitive(it)) }
+                            put("contextTokens", JsonPrimitive(m.contextTokens ?: 128_000L))
+                            put("reasoning", JsonPrimitive(m.reasoning ?: false))
+                            put("imageInput", JsonPrimitive(m.imageInput ?: false))
+                            put("tools", JsonPrimitive(m.tools ?: true))
                             m.note?.let { put("note", JsonPrimitive(it)) }
                         }
                     )
@@ -704,66 +615,5 @@ object HarnessProvider {
             )
             file.writeText(ProviderFactory.json.encodeToString(JsonElement.serializer(), arr))
         }
-    }
-}
-
-    /** Parses Kilo API /models response into ModelEntry list for HarnessProvider. */
-    fun parseKiloCatalog(body: String): List<ModelEntry> {
-        val root = runCatching { ProviderFactory.json.parseToJsonElement(body).jsonObject }.getOrNull()
-            ?: return emptyList()
-        return root["data"]?.jsonArrayOrAbsent()?.mapNotNull { el ->
-            val obj = el as? JsonObject ?: return@mapNotNull null
-            val id = (obj["id"] as? JsonPrimitive)?.takeIf { it.isString }
-                ?.contentOrNull?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val name = (obj["name"] as? JsonPrimitive)?.contentOrNull
-            val window = obj["context_window"]
-            val ctx = sequenceOf(obj["context_length"], obj["max_tokens"], window,
-                window.jsonObjectOrAbsent()?.get("tokens"))
-                .mapNotNull { (it as? JsonPrimitive)?.longOrNull }.firstOrNull()
-            val maxOut = (obj["max_output_tokens"] as? JsonPrimitive)?.intOrNull
-            val reasoning = (obj["reasoning"] as? JsonPrimitive)?.booleanOrNull
-            val imageInput = (obj["image_input"] as? JsonPrimitive)?.booleanOrNull
-            val tools = (obj["tools"] as? JsonPrimitive)?.booleanOrNull
-            val free = (obj["free"] as? JsonPrimitive)?.booleanOrNull
-            val inputPrice = (obj["input_price"] as? JsonPrimitive)?.doubleOrNull
-            val outputPrice = (obj["output_price"] as? JsonPrimitive)?.doubleOrNull
-            val note = (obj["note"] as? JsonPrimitive)?.contentOrNull
-            ModelEntry(
-                id = id,
-                name = name ?: id,
-                contextWindow = ctx,
-                maxOutput = maxOut,
-                reasoning = reasoning,
-                imageInput = imageInput,
-                tools = tools,
-                free = free,
-                inputPrice = inputPrice,
-                outputPrice = outputPrice,
-                note = note,
-            )
-        } ?: emptyList()
-    }
-
-    /** Probes a custom model's actual API wire type by making a test request. */
-    suspend fun probeWire(modelId: String, apiKey: String): ProviderType? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        val client = poolClient.newBuilder().build()
-        val request = Request.Builder()
-            .url(KILO_BASE_URL + "/models")
-            .header("User-Agent", USER_AGENT)
-            .build()
-        try {
-            client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
-                val body = resp.body?.string() ?: return@withContext null
-                val entries = parseKiloCatalog(body)
-                val entry = entries.firstOrNull { it.id == modelId }
-                if (entry != null) {
-                    return@withContext wire(modelId)
-                }
-            }
-        } catch (e: Exception) {
-            return@withContext null
-        }
-        return@withContext wire(modelId)
     }
 }

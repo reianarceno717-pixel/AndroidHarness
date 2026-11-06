@@ -1507,9 +1507,9 @@ class ChatViewModel(
                         roleModel, c.providers.harnessApiKey(),
                     )
                     if (learned != null) {
-                        c.providers.pinWire(roleModel, learned.label)
+                        c.providers.pinWire(roleModel, learned.name)
                         com.androidharness.app.llm.HarnessProvider.pins =
-                            com.androidharness.app.llm.HarnessProvider.pins + (roleModel to learned.label)
+                            com.androidharness.app.llm.HarnessProvider.pins + (roleModel to learned.name)
                     }
                 }
                 // Security gate (battery D1): a workspace .harness/mcp.json never
