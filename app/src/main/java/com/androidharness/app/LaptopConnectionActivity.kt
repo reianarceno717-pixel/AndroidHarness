@@ -1,5 +1,6 @@
 package com.androidharness.app
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -89,7 +90,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
     }
 
     private fun refresh() {
-        addressText.text = getString(R.string.laptop_address_example)
+        addressText.text = getString(R.string.laptop_address_placeholder)
         statusText.text = getString(R.string.laptop_status_tethering_off)
         statusText.setTextColor(android.graphics.Color.WHITE)
         isTetheringEnabled = false

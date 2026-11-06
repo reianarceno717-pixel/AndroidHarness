@@ -5127,8 +5127,8 @@
       ],
       "related": [
         "startup",
-        "environment",
-        "connected-accounts"
+        "wireless-adb",
+        "browser-preview"
       ],
       "actions": [
         {
@@ -5138,7 +5138,7 @@
         }
       ],
       "sources": [
-        "ui/settings/LaptopConnectionActivity.kt",
+        "LaptopConnectionActivity.kt",
         "ui/settings/LaptopSection.kt",
         "ui/settings/SettingsNavigation.kt"
       ],

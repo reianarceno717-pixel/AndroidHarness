@@ -39,7 +39,7 @@ internal data class RemoteImageFetch(
 )
 
 internal object RemoteContentLoader {
-    private const val MAX_IMAGE_BYTES = Long.MAX_VALUE
+    private const val MAX_IMAGE_BYTES = Int.MAX_VALUE.toLong()
     private const val MAX_IMAGE_EDGE = 1600
     private const val MEMORY_CACHE_BYTES = 24 * 1024 * 1024
     private const val DISK_CACHE_BYTES = 32L * 1024 * 1024
