@@ -509,8 +509,8 @@ class FloatingBubbleService : Service() {
             conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("Authorization", LaptopConnectionActivity.localBridgeAuthorization())
             conn.doOutput = true
-            conn.connectTimeout = 8000
-            conn.readTimeout = 15000
+            conn.connectTimeout = 10000
+            conn.readTimeout = 120000
 
             val messages = org.json.JSONArray()
             history.forEach { (role, text) ->
@@ -535,8 +535,9 @@ class FloatingBubbleService : Service() {
                 }
             }
             resObj.optString("reply", "Done.")
-        } catch (_: Exception) {
-            "I'm here to help! Connect to Wi-Fi/Hotspot or open AndroidHarness to run larger coding tasks."
+        } catch (e: Exception) {
+            "AndroidHarness connection error: " + (e.message ?: e.javaClass.simpleName) +
+                ". Check that the phone bridge is running and try again."
         }
     }
 
