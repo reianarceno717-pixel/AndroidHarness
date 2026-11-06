@@ -53,6 +53,7 @@ class FloatingBubbleService : Service() {
     private var isTtsReady = false
     private var speechRecognizer: SpeechRecognizer? = null
     private val conversationHistory = mutableListOf<Pair<String, String>>()
+    private var assistantBusy = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -487,16 +488,26 @@ class FloatingBubbleService : Service() {
     }
 
     private fun askAssistant(prompt: String, messageBox: TextView) {
+        if (assistantBusy) {
+            messageBox.text = "AI Team is still working on your previous message. Please wait."
+            return
+        }
+        if (prompt.isBlank()) return
+        assistantBusy = true
         messageBox.text = "You: $prompt\n\nAI Team working..."
         scope.launch {
-            conversationHistory += "user" to prompt
-            val reply = withContext(Dispatchers.IO) {
-                queryLocalOrRemoteModel(prompt, conversationHistory.toList())
+            try {
+                conversationHistory += "user" to prompt
+                val reply = withContext(Dispatchers.IO) {
+                    queryLocalOrRemoteModel(prompt, conversationHistory.toList())
+                }
+                messageBox.text = conversationHistory.takeLast(8).joinToString("\n\n") { (role, text) ->
+                    "${if (role == "user") "You" else "AI"}: $text"
+                }
+                speakText(reply)
+            } finally {
+                assistantBusy = false
             }
-            messageBox.text = conversationHistory.takeLast(8).joinToString("\n\n") { (role, text) ->
-                "${if (role == "user") "You" else "AI"}: $text"
-            }
-            speakText(reply)
         }
     }
 
