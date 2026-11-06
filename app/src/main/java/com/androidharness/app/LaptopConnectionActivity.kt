@@ -30,7 +30,10 @@ import java.net.URLDecoder
 import java.security.SecureRandom
 import android.util.Base64
 import java.util.Collections
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class LaptopConnectionActivity : AppCompatActivity() {
@@ -246,7 +249,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
         var activePort: Int = 8080
             private set
 
-        private val executor = Executors.newCachedThreadPool()
+        // Bound concurrent bridge clients so a burst of LAN requests cannot
+        // create an unbounded number of threads on the phone.
+        private val executor = ThreadPoolExecutor(
+            8, 8, 30L, TimeUnit.SECONDS, ArrayBlockingQueue(32),
+            ThreadPoolExecutor.AbortPolicy(),
+        )
         private val chatHistoryLock = Any()
         private val bridgeChatBusy = AtomicBoolean(false)
 
@@ -278,7 +286,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         while (!socket.isClosed) {
                             try {
                                 val client = socket.accept()
-                                executor.execute { handleClient(client, workspaceDir) }
+                                try {
+                                    executor.execute { handleClient(client, workspaceDir) }
+                                } catch (_: RejectedExecutionException) {
+                                    // Close immediately when the bounded worker queue is full.
+                                    runCatching { client.close() }
+                                }
                             } catch (_: Exception) {
                                 if (socket.isClosed) break
                             }
