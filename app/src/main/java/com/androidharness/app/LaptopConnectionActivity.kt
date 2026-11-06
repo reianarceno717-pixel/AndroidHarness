@@ -388,6 +388,9 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 }
 
                 when {
+                    method !in setOf("GET", "POST") -> {
+                        writeHttpResponse(sock, 405, "application/json; charset=utf-8", """{"error":"Method not allowed. Use GET or POST."}""")
+                    }
                     method == "GET" && path == "/api/ping" -> {
                         val json = JSONObject()
                             .put("ok", true)
@@ -539,6 +542,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 400 -> "Bad Request"
                 401 -> "Unauthorized"
                 404 -> "Not Found"
+                405 -> "Method Not Allowed"
                 413 -> "Payload Too Large"
                 502 -> "Bad Gateway"
                 else -> "Error"
