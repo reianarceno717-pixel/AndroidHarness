@@ -542,6 +542,8 @@ async function apiFetch(url, options = {}) {
   return fetch(url, { ...options, headers });
 }
 let activeFilePath = "";
+let chatHistory = [];
+try { chatHistory = JSON.parse(sessionStorage.getItem("androidHarnessChatHistory") || "[]"); } catch (_) { chatHistory = []; }
 let autoVoiceRead = true;
 let isRecognizing = false;
 
@@ -648,12 +650,16 @@ async function sendPrompt() {
     const res = await apiFetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ prompt: text })
+      body: JSON.stringify({ prompt: text, messages: [...chatHistory, { role: "user", content: text }] })
     });
     const data = await res.json();
     document.getElementById("model-tag").textContent = data.model || "kilo-auto/free";
     const replyText = data.reply || "Done.";
     a.textContent = replyText;
+    if (data.ok) {
+      chatHistory = [...chatHistory, { role: "user", content: text }, { role: "assistant", content: replyText }].slice(-40);
+      sessionStorage.setItem("androidHarnessChatHistory", JSON.stringify(chatHistory));
+    }
     if (autoVoiceRead && window.speechSynthesis) {
       window.speechSynthesis.cancel();
       const cleanSpeech = replyText.replace(/[*#`_]/g, "").slice(0, 450);
