@@ -369,8 +369,16 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         headersComplete = true
                         break
                     }
+                    val colonIndex = header.indexOf(':')
+                    val headerName = if (colonIndex > 0) header.substring(0, colonIndex) else ""
+                    val validHeaderName = headerName.isNotEmpty() &&
+                        headerName.all { it.isLetterOrDigit() || it in "!#$%&'*+-.^_`|~" }
+                    if (!validHeaderName) {
+                        malformedHeader = true
+                        continue
+                    }
                     when {
-                        header.lowercase().startsWith("content-length:") -> {
+                        headerName.equals("content-length", ignoreCase = true) -> {
                             if (contentLengthSeen) {
                                 writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Duplicate Content-Length header"}""")
                                 return
@@ -381,9 +389,9 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             contentLength = parsedLength ?: 0
                             invalidContentLength = parsedLength == null || rawLength.any { !it.isDigit() }
                         }
-                        header.lowercase().startsWith("transfer-encoding:") ->
+                        headerName.equals("transfer-encoding", ignoreCase = true) ->
                             unsupportedTransferEncoding = true
-                        header.lowercase().startsWith("authorization:") -> {
+                        headerName.equals("authorization", ignoreCase = true) -> {
                             if (authorizationSeen) {
                                 writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Duplicate Authorization header"}""")
                                 return
@@ -391,11 +399,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             authorizationSeen = true
                             authorization = header.substringAfter(":").trim()
                         }
-                        else -> {
-                            if (!header.contains(":") || header.substringBefore(":").isBlank()) {
-                                malformedHeader = true
-                            }
-                        }
+                        else -> Unit
                     }
                 }
                 if (!headersComplete) {
