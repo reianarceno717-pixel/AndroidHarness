@@ -250,6 +250,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
         private val executor = Executors.newCachedThreadPool()
 
         // A per-installation bridge secret. The paired URL is shown only on the phone.
+        internal fun localBridgeAuthorization(): String = "Bearer $bridgeToken"
+
         private val bridgeToken: String by lazy {
             val bytes = ByteArray(32)
             SecureRandom().nextBytes(bytes)
