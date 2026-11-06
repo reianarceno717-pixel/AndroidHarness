@@ -4,16 +4,11 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.LinkAddress
-import android.net.NetworkRequest
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import com.androidharness.app.R
 
 /**
@@ -27,17 +22,15 @@ import com.androidharness.app.R
  *   4. Open Chrome/Firefox/Edge on your laptop → type the IP shown on phone
  *   5. You're now using the AI directly on your laptop browser
  *
- * No camera needed. No software install on laptop. Manual typing of the link is the fallback
- * when the laptop has no camera to scan a QR code.
+ * No camera needed. No software install on laptop.
  */
 class LaptopConnectionActivity : AppCompatActivity() {
 
     private lateinit var connectivityManager: ConnectivityManager
-    private lateinit var networkCallback: ConnectivityManager.NetworkCallback
     private var isTetheringEnabled = false
 
     private lateinit var statusText: TextView
-    private lateinit var ipText: TextView
+    private lateinit var addressText: TextView
     private lateinit var enableButton: Button
     private lateinit var copyButton: Button
 
@@ -48,15 +41,15 @@ class LaptopConnectionActivity : AppCompatActivity() {
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
         statusText = findViewById(R.id.laptop_status)
-        ipText = findViewById(R.id.laptop_ip)
+        addressText = findViewById(R.id.laptop_ip)
         enableButton = findViewById(R.id.laptop_enable_button)
         copyButton = findViewById(R.id.laptop_copy_button)
 
         copyButton.setOnClickListener {
-            val ip = ipText.text.toString()
-            android.content.ClipboardManager.getSystemService(this)
-                ?.setPrimaryClip(android.content.ClipData.newPlainText("laptop_ip", ip))
-            Toast.makeText(this, "IP copied to clipboard", Toast.LENGTH_SHORT).show()
+            val address = addressText.text.toString()
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("laptop_address", address))
+            Toast.makeText(this, R.string.laptop_copied, Toast.LENGTH_SHORT).show()
         }
 
         enableButton.setOnClickListener {
@@ -67,121 +60,82 @@ class LaptopConnectionActivity : AppCompatActivity() {
             }
         }
 
-        updateUi(false)
+        refresh()
     }
 
     private fun startUsbTethering() {
-        val usbIf = findUsbInterface()
-        if (usbIf == null) {
-            statusText.text = "USB cable not detected. Connect your phone to laptop via Type-C cable."
+        val success = tryUsbTethering(true)
+        if (!success) {
+            statusText.text = getString(R.string.laptop_status_unavailable)
             statusText.setTextColor(android.graphics.Color.RED)
             return
         }
 
-        networkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                runOnUiThread {
-                    val ip = getIpAddress(network)
-                    if (ip != null) {
-                        ipText.text = ip
-                        statusText.text = "USB tethering active — laptop can connect now"
-                        statusText.setTextColor(android.graphics.Color.GREEN)
-                        isTetheringEnabled = true
-                        enableButton.text = "Disable USB Tethering"
-                        copyButton.isEnabled = true
-                    } else {
-                        statusText.text = "Waiting for IP address..."
-                        statusText.setTextColor(android.graphics.Color.YELLOW)
-                    }
-                }
-            }
-
-            override fun onLost(network: Network) {
-                runOnUiThread {
-                    statusText.text = "USB connection lost"
-                    statusText.setTextColor(android.graphics.Color.RED)
-                    isTetheringEnabled = false
-                    enableButton.text = "Enable USB Tethering"
-                    ipText.text = "—"
-                    copyButton.isEnabled = false
-                }
-            }
-        }
-
-        val request = NetworkRequest.Builder()
-            .addTransportType(ConnectivityManager.TRANSPORT_ETHERNET)
-            .build()
-        connectivityManager.registerNetworkCallback(request, networkCallback)
-
-        // Start USB tethering via reflection (Android API)
-        val tetherResult = tryConnectivityManagerTether(connectivityManager, true)
-        if (!tetherResult) {
-            statusText.text = "USB tethering not available on this device"
-            statusText.setTextColor(android.graphics.Color.RED)
-        } else {
-            statusText.text = "Enabling USB tethering..."
-            statusText.setTextColor(android.graphics.Color.YELLOW)
-        }
+        statusText.text = getString(R.string.laptop_status_tethering_on)
+        statusText.setTextColor(android.graphics.Color.GREEN)
+        isTetheringEnabled = true
+        enableButton.text = getString(R.string.laptop_disable_tethering)
+        copyButton.isEnabled = true
+        addressText.text = "192.168.42.1:8080 (typical)"
     }
 
     private fun stopUsbTethering() {
-        tryConnectivityManagerTether(connectivityManager, false)
-        connectivityManager.unregisterNetworkCallback(networkCallback)
+        tryUsbTethering(false)
         isTetheringEnabled = false
-        enableButton.text = "Enable USB Tethering"
-        ipText.text = "—"
+        enableButton.text = getString(R.string.laptop_enable_tethering)
+        addressText.text = getString(R.string.laptop_address_placeholder)
         copyButton.isEnabled = false
-        statusText.text = "USB tethering disabled"
+        statusText.text = getString(R.string.laptop_status_tethering_off)
         statusText.setTextColor(android.graphics.Color.WHITE)
     }
 
-    private fun tryConnectivityManagerTether(cm: ConnectivityManager, enable: Boolean): Boolean {
+    @SuppressLint("MissingPermission")
+    private fun tryUsbTethering(enable: Boolean): Boolean {
         return try {
-            val method = java.lang.reflect.Method::class.java.getDeclaredMethod(
-                "setUsbTethering",
-                java.lang.Boolean::class.java.javaObjectType
+            val method = connectivityManager::class.java.getMethod(
+                if (enable) "startUsbTethering" else "stopUsbTethering"
             )
             method.isAccessible = true
-            method.invoke(cm, enable) as Boolean
+            method.invoke(connectivityManager) as Boolean
         } catch (e: Exception) {
-            // Fallback: try startUsbTethering (may not exist on all versions)
-            try {
-                val method = java.lang.reflect.Method::class.java.getDeclaredMethod(
-                    "startUsbTethering"
-                )
-                method.isAccessible = true
-                method.invoke(cm)
-                true
-            } catch (e2: Exception) {
-                false
-            }
+            false
         }
     }
 
-    private fun findUsbInterface(): String? {
+    private fun refresh() {
+        val address = getUsbIpAddress()
+        if (address != null) {
+            addressText.text = "$address:8080"
+            statusText.text = getString(R.string.laptop_status_tethering_on)
+            statusText.setTextColor(android.graphics.Color.GREEN)
+            isTetheringEnabled = true
+            enableButton.text = getString(R.string.laptop_disable_tethering)
+            copyButton.isEnabled = true
+        } else {
+            addressText.text = getString(R.string.laptop_address_placeholder)
+            statusText.text = getString(R.string.laptop_status_tethering_off)
+            statusText.setTextColor(android.graphics.Color.WHITE)
+            isTetheringEnabled = false
+        }
+        enableButton.text = if (isTetheringEnabled) getString(R.string.laptop_disable_tethering) else getString(R.string.laptop_enable_tethering)
+        copyButton.isEnabled = isTetheringEnabled
+    }
+
+    private fun getUsbIpAddress(): String? {
         return try {
-            val method = java.lang.reflect.Method::class.java.getDeclaredMethod(
-                "getTetheredIfaces"
-            )
-            method.isAccessible = true
-            val ifaces = method.invoke(connectivityManager) as? Array<out String>
-            ifaces?.firstOrNull { it.startsWith("usb") || it.startsWith("rndis") }
-        } catch (e: Exception) {
+            val networks = connectivityManager.allNetworks
+            for (network in networks) {
+                val caps = connectivityManager.getNetworkCapabilities(network)
+                if (caps != null && caps.hasTransport(ConnectivityManager.TRANSPORT_ETHERNET)) {
+                    val addrs = connectivityManager.getLinkAddresses(network)
+                    for (addr in addrs) {
+                        if (addr is android.net.LinkAddress && !addr.isLinkLocalAddress) {
+                            return addr.address.hostAddress
+                        }
+                    }
+                }
+            }
             null
-        }
-    }
-
-    private fun getIpAddress(network: Network): String? {
-        return try {
-            val method = java.lang.reflect.Method::class.java.getDeclaredMethod(
-                "getLinkAddresses",
-                java.lang.Network::class.java
-            )
-            method.isAccessible = true
-            val addrs = method.invoke(connectivityManager, network) as? java.util.List<*>
-            addrs?.firstOrNull { it is android.net.LinkAddress }?.let {
-                (it as android.net.LinkAddress).address.hostAddress
-            }
         } catch (e: Exception) {
             null
         }
@@ -190,8 +144,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private fun updateUi(enabled: Boolean) {
         isTetheringEnabled = enabled
-        enableButton.text = if (enabled) "Disable USB Tethering" else "Enable USB Tethering"
-        copyButton.isEnabled = enabled && ipText.text.toString() != "—"
+        enableButton.text = if (enabled) getString(R.string.laptop_disable_tethering) else getString(R.string.laptop_enable_tethering)
+        copyButton.isEnabled = enabled
     }
 
     override fun onDestroy() {
