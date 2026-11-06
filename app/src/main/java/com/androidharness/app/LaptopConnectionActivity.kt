@@ -551,30 +551,6 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             bridgeChatBusy.set(false)
                         }
                     }
-                    else -> {}
-                                    }
-                                }
-                            }
-                            val answer = if (reply.isNotEmpty()) reply.toString() else (errorMsg ?: "No response")
-                            if (reply.isNotEmpty()) {
-                                history.put(JSONObject().put("role", "assistant").put("content", answer))
-                                while (history.length() > 40) history.remove(0)
-                                val temp = File(historyFile.parentFile, historyFile.name + ".next")
-                                temp.writeText(history.toString())
-                                if (!temp.renameTo(historyFile)) {
-                                    temp.delete()
-                                    historyFile.writeText(history.toString())
-                                }
-                            }
-                            JSONObject()
-                                .put("ok", errorMsg == null || reply.isNotEmpty())
-                                .put("model", activeModel)
-                                .put("thinking", thoughts.toString())
-                                .put("reply", answer)
-                                .put("messages", history)
-                        }
-                        writeHttpResponse(sock, if (replyPayload.optBoolean("ok")) 200 else 502, "application/json; charset=utf-8", replyPayload.toString())
-                    }
                     else -> {
                         writeHttpResponse(sock, 200, "text/html; charset=utf-8", LAPTOP_WEB_HTML)
                     }
