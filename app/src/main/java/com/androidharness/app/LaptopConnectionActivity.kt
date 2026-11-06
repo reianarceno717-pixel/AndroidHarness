@@ -383,7 +383,22 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         val payload = JSONObject(body.ifBlank { "{}" })
                         val prompt = payload.optString("prompt").trim()
                         val model = payload.optString("model").ifBlank { HarnessProvider.DEFAULT_MODEL }
-                        if (prompt.isEmpty()) {
+                        val historyJson = payload.optJSONArray("messages")
+                        val conversation = mutableListOf<ChatMessage>()
+                        if (historyJson != null) {
+                            for (i in 0 until historyJson.length()) {
+                                val item = historyJson.optJSONObject(i) ?: continue
+                                val text = item.optString("content").take(32_000)
+                                val role = when (item.optString("role").lowercase()) {
+                                    "assistant" -> Role.ASSISTANT
+                                    "user" -> Role.USER
+                                    else -> continue
+                                }
+                                if (text.isNotBlank()) conversation += ChatMessage(role = role, text = text)
+                            }
+                        }
+                        if (conversation.isEmpty() && prompt.isNotEmpty()) conversation += ChatMessage(role = Role.USER, text = prompt)
+                        if (prompt.isEmpty() && conversation.isEmpty()) {
                             writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Empty prompt"}""")
                             return
                         }
@@ -398,7 +413,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 config = cfg,
                                 apiKey = HarnessProvider.KEYLESS,
                                 systemPrompt = "You are AndroidHarness running live on the user's Android phone and connected to their laptop browser over local bridge.",
-                                messages = listOf(ChatMessage(role = Role.USER, text = prompt)),
+                                messages = conversation,
                                 tools = emptyList(),
                                 options = RequestOptions(),
                             ).collect { event ->
