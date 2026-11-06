@@ -54,6 +54,7 @@ object HarnessProvider {
     const val POLLINATIONS_NOTE = "Pollinations · Public"
     const val SESSION_HEADER = "x-opencode-session"
     const val REQUEST_HEADER = "x-opencode-request"
+    const val USER_AGENT = "AndroidHarness/1.0"
 
     /** Per-candidate timeout before invisibly failing over to the next fast model in the pool. */
     private const val CANDIDATE_TIMEOUT_MS = 14_000L
@@ -241,7 +242,7 @@ object HarnessProvider {
     var customModels: List<ModelEntry> = emptyList()
         private set
 
-    private val customModelIds = ConcurrentHashMap.newKeySet<String>()
+    val customModelIds = ConcurrentHashMap.newKeySet<String>()
 
     val config = ProviderConfig(
         id = ID,
@@ -285,9 +286,11 @@ object HarnessProvider {
 
     fun isPooled(model: String): Boolean = pool.containsKey(model)
 
-    fun sanitize(model: String): String {
+    fun sanitize(model: String): String = sanitize(model, customModelIds)
+
+    fun sanitize(model: String, customIds: Set<String>): String {
         if (model.isBlank()) return pooledModels.firstOrNull()?.id ?: DEFAULT_MODEL
-        if (isPooled(model) || model in customModelIds) return model
+        if (isPooled(model) || model in customIds) return model
         return pooledModels.firstOrNull()?.id ?: DEFAULT_MODEL
     }
 
@@ -701,5 +704,66 @@ object HarnessProvider {
             )
             file.writeText(ProviderFactory.json.encodeToString(JsonElement.serializer(), arr))
         }
+    }
+}
+
+    /** Parses Kilo API /models response into ModelEntry list for HarnessProvider. */
+    fun parseKiloCatalog(body: String): List<ModelEntry> {
+        val root = runCatching { ProviderFactory.json.parseToJsonElement(body).jsonObject }.getOrNull()
+            ?: return emptyList()
+        return root["data"]?.jsonArrayOrAbsent()?.mapNotNull { el ->
+            val obj = el as? JsonObject ?: return@mapNotNull null
+            val id = (obj["id"] as? JsonPrimitive)?.takeIf { it.isString }
+                ?.contentOrNull?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val name = (obj["name"] as? JsonPrimitive)?.contentOrNull
+            val window = obj["context_window"]
+            val ctx = sequenceOf(obj["context_length"], obj["max_tokens"], window,
+                window.jsonObjectOrAbsent()?.get("tokens"))
+                .mapNotNull { (it as? JsonPrimitive)?.longOrNull }.firstOrNull()
+            val maxOut = (obj["max_output_tokens"] as? JsonPrimitive)?.intOrNull
+            val reasoning = (obj["reasoning"] as? JsonPrimitive)?.booleanOrNull
+            val imageInput = (obj["image_input"] as? JsonPrimitive)?.booleanOrNull
+            val tools = (obj["tools"] as? JsonPrimitive)?.booleanOrNull
+            val free = (obj["free"] as? JsonPrimitive)?.booleanOrNull
+            val inputPrice = (obj["input_price"] as? JsonPrimitive)?.doubleOrNull
+            val outputPrice = (obj["output_price"] as? JsonPrimitive)?.doubleOrNull
+            val note = (obj["note"] as? JsonPrimitive)?.contentOrNull
+            ModelEntry(
+                id = id,
+                name = name ?: id,
+                contextWindow = ctx,
+                maxOutput = maxOut,
+                reasoning = reasoning,
+                imageInput = imageInput,
+                tools = tools,
+                free = free,
+                inputPrice = inputPrice,
+                outputPrice = outputPrice,
+                note = note,
+            )
+        } ?: emptyList()
+    }
+
+    /** Probes a custom model's actual API wire type by making a test request. */
+    suspend fun probeWire(modelId: String, apiKey: String): ProviderType? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val client = poolClient.newBuilder().build()
+        val request = Request.Builder()
+            .url(KILO_BASE_URL + "/models")
+            .header("User-Agent", USER_AGENT)
+            .build()
+        try {
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val body = resp.body?.string() ?: return@withContext null
+                val entries = parseKiloCatalog(body)
+                val entry = entries.firstOrNull { it.id == modelId }
+                if (entry != null) {
+                    return@withContext wire(modelId)
+                }
+            }
+        } catch (e: Exception) {
+            return@withContext null
+        }
+        return@withContext wire(modelId)
     }
 }

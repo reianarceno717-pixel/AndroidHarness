@@ -38,6 +38,13 @@ data class ModelEntry(
     /** Explicit catalog metadata only. Null means this connection did not report it. */
     val tools: Boolean? = null,
     val imageInput: Boolean? = null,
+    // HarnessProvider-specific fields for custom/free model persistence
+    val name: String? = null,
+    val maxOutput: Int? = null,
+    val free: Boolean? = null,
+    val inputPrice: Double? = null,
+    val outputPrice: Double? = null,
+    val contextWindow: Long? = null,
 )
 
 /** Family-based thinking-capability hint for endpoints that don't report it. */
