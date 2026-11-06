@@ -516,6 +516,13 @@ object HarnessProvider {
                             )
                         }
                         lastFailure = failure
+                        // Permanent credential/configuration errors must not be
+                        // disguised as quota or retried through unrelated gateways.
+                        if (failure.code in setOf(400, 401, 403, 404, 405, 422) ||
+                            failure.retryable == false) {
+                            send(failure)
+                            return@channelFlow
+                        }
                         markUpstreamCooldown(candidate.key)
                     }
                     if (committedOutput || index == orderedCandidates.lastIndex) {
