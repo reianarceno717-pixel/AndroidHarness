@@ -800,6 +800,7 @@ async function saveCurrentFile() {
 }
 
 let bridgeRefreshInFlight = false;
+let bridgeAssistantBusy = false;
 async function refreshBridgeStatus() {
   const label = document.getElementById("status-meta");
   if (!label || !sessionToken || bridgeRefreshInFlight) return;
@@ -808,7 +809,10 @@ async function refreshBridgeStatus() {
     const res = await apiFetch("/api/chat/status");
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || "Status unavailable");
-    label.textContent = data.busy
+    bridgeAssistantBusy = !!data.busy;
+    const sendButton = document.querySelector(".chat-input button:last-child");
+    if (sendButton && !chatRequestInFlight) sendButton.disabled = bridgeAssistantBusy;
+    label.textContent = bridgeAssistantBusy
       ? "AndroidHarness · Assistant responding · " + data.messageCount + " messages"
       : "AndroidHarness · Connected · " + data.messageCount + " messages";
     await refreshSharedChatHistory();
@@ -842,7 +846,7 @@ async function refreshSharedChatHistory() {
   } catch (_) { /* Preserve the current conversation during temporary bridge failures. */ }
 }
 async function sendPrompt() {
-  if (chatRequestInFlight) return;
+  if (chatRequestInFlight || bridgeAssistantBusy) return;
   const input = document.getElementById("prompt-input");
   const text = input.value.trim();
   if (!text) return;
@@ -888,7 +892,7 @@ async function sendPrompt() {
   } finally {
     chatRequestInFlight = false;
     if (sendButton) {
-      sendButton.disabled = false;
+      sendButton.disabled = bridgeAssistantBusy;
       sendButton.textContent = "Send";
     }
   }
