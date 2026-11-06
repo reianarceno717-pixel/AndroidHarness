@@ -251,6 +251,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
         // A per-installation bridge secret. The paired URL is shown only on the phone.
         internal fun localBridgeAuthorization(): String = "Bearer $bridgeToken"
 
+        private fun isBridgeAuthorized(authorization: String): Boolean =
+            java.security.MessageDigest.isEqual(
+                authorization.toByteArray(Charsets.UTF_8),
+                "Bearer $bridgeToken".toByteArray(Charsets.UTF_8),
+            )
+
         private val bridgeToken: String by lazy {
             val bytes = ByteArray(32)
             SecureRandom().nextBytes(bytes)
@@ -339,7 +345,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     String(buf, 0, read, Charsets.UTF_8)
                 } else ""
 
-                if (path.startsWith("/api/") && authorization != "Bearer $bridgeToken") {
+                if (path.startsWith("/api/") && !isBridgeAuthorized(authorization)) {
                     writeHttpResponse(sock, 401, "application/json; charset=utf-8", """{"error":"Unauthorized. Open the paired link shown in AndroidHarness."}""")
                     return
                 }
