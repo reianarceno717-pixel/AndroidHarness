@@ -121,14 +121,24 @@ object GroqWhisperClient {
     /** Keep cancellation attached until the response body has also finished reading. */
     private suspend fun executeText(client: OkHttpClient, request: Request): TextResponse = suspendCancellableCoroutine { continuation ->
         val call = client.newCall(request)
-        continuation.invokeOnCancellation { call.cancel() }
+        var response: Response? = null
+
+        continuation.invokeOnCancellation {
+            response?.close()
+            call.cancel()
+        }
+
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, error: IOException) {
                 if (continuation.isActive) continuation.resumeWithException(error)
             }
-            override fun onResponse(call: Call, response: Response) {
+
+            override fun onResponse(call: Call, responseValue: Response) {
+                response = responseValue
                 try {
-                    val result = response.use { TextResponse(it.code, it.body?.string().orEmpty()) }
+                    val result = responseValue.use {
+                        TextResponse(it.code, it.body?.string().orEmpty())
+                    }
                     if (continuation.isActive) continuation.resume(result)
                 } catch (error: Exception) {
                     if (continuation.isActive) continuation.resumeWithException(error)
