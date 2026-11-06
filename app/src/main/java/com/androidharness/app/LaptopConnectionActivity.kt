@@ -324,6 +324,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 val query = fullPath.substringAfter("?", "")
 
                 var contentLength = 0
+                var contentLengthSeen = false
+                var unsupportedTransferEncoding = false
                 var authorization: String? = null
                 var headerBytes = 0
                 var headersComplete = false
@@ -337,8 +339,16 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         break
                     }
                     when {
-                        header.lowercase().startsWith("content-length:") ->
+                        header.lowercase().startsWith("content-length:") -> {
+                            if (contentLengthSeen) {
+                                writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Duplicate Content-Length header"}""")
+                                return
+                            }
+                            contentLengthSeen = true
                             contentLength = header.substringAfter(":").trim().toIntOrNull() ?: -1
+                        }
+                        header.lowercase().startsWith("transfer-encoding:") ->
+                            unsupportedTransferEncoding = true
                         header.lowercase().startsWith("authorization:") ->
                             authorization = header.substringAfter(":").trim()
                     }
@@ -348,6 +358,10 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     return
                 }
 
+                if (unsupportedTransferEncoding) {
+                    writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Transfer-Encoding is not supported by this bridge"}""")
+                    return
+                }
                 if (contentLength < 0 || contentLength > 2 * 1024 * 1024) {
                     writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"Request body exceeds the 2 MB limit"}""")
                     return
