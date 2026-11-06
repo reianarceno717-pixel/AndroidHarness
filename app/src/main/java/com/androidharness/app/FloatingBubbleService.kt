@@ -221,11 +221,34 @@ class FloatingBubbleService : Service() {
             gravity = Gravity.CENTER_VERTICAL
         }
         val title = TextView(this).apply {
-            text = "⚡ AndroidHarness Assistant"
+            text = "AndroidHarness Assistant  ·  drag to move"
             setTextColor(Color.parseColor("#38BDF8"))
-            textSize = 15f
+            textSize = 14f
             paint.isFakeBoldText = true
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        var dragStartX = 0
+        var dragStartY = 0
+        var touchStartX = 0f
+        var touchStartY = 0f
+        title.setOnTouchListener { _, event ->
+            val params = overlayParams ?: return@setOnTouchListener false
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    dragStartX = params.x
+                    dragStartY = params.y
+                    touchStartX = event.rawX
+                    touchStartY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    params.x = dragStartX + (event.rawX - touchStartX).toInt()
+                    params.y = dragStartY + (event.rawY - touchStartY).toInt()
+                    windowManager.updateViewLayout(root, params)
+                    true
+                }
+                else -> false
+            }
         }
         val closeBtn = Button(this).apply {
             text = "✕"
