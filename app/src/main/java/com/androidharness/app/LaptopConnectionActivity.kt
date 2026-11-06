@@ -31,6 +31,7 @@ import java.security.SecureRandom
 import android.util.Base64
 import java.util.Collections
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class LaptopConnectionActivity : AppCompatActivity() {
 
@@ -247,6 +248,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
         private val executor = Executors.newCachedThreadPool()
         private val chatHistoryLock = Any()
+        private val bridgeChatBusy = AtomicBoolean(false)
 
         // A per-installation bridge secret. The paired URL is shown only on the phone.
         internal fun localBridgeAuthorization(): String = "Bearer $bridgeToken"
@@ -466,23 +468,36 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"Prompt exceeds the 32,000 character limit"}""")
                             return
                         }
-                        val replyPayload = synchronized(chatHistoryLock) {
+                        if (!bridgeChatBusy.compareAndSet(false, true)) {
+                            writeHttpResponse(sock, 409, "application/json; charset=utf-8", """{"error":"A remote assistant response is already in progress"}""")
+                            return
+                        }
+                        try {
                             val historyFile = File(workspaceDir, ".androidharness-chat-history.json")
-                            val history = runCatching {
-                                if (historyFile.isFile) JSONArray(historyFile.readText()) else JSONArray()
-                            }.getOrDefault(JSONArray())
-                            history.put(JSONObject().put("role", "user").put("content", prompt))
-                            while (history.length() > 40) history.remove(0)
-                            val conversation = mutableListOf<ChatMessage>()
-                            for (i in 0 until history.length()) {
-                                val item = history.optJSONObject(i) ?: continue
-                                val text = item.optString("content").take(32_000)
-                                val role = when (item.optString("role").lowercase()) {
-                                    "assistant" -> Role.ASSISTANT
-                                    "user" -> Role.USER
-                                    else -> continue
+                            val conversation = synchronized(chatHistoryLock) {
+                                val history = runCatching {
+                                    if (historyFile.isFile) JSONArray(historyFile.readText()) else JSONArray()
+                                }.getOrDefault(JSONArray())
+                                history.put(JSONObject().put("role", "user").put("content", prompt))
+                                while (history.length() > 40) history.remove(0)
+                                val temp = File(historyFile.parentFile, historyFile.name + ".next")
+                                temp.writeText(history.toString())
+                                if (!temp.renameTo(historyFile)) {
+                                    temp.delete()
+                                    historyFile.writeText(history.toString())
                                 }
-                                if (text.isNotBlank()) conversation += ChatMessage(role = role, text = text)
+                                buildList {
+                                    for (i in 0 until history.length()) {
+                                        val item = history.optJSONObject(i) ?: continue
+                                        val text = item.optString("content").take(32_000)
+                                        val role = when (item.optString("role").lowercase()) {
+                                            "assistant" -> Role.ASSISTANT
+                                            "user" -> Role.USER
+                                            else -> continue
+                                        }
+                                        if (text.isNotBlank()) add(ChatMessage(role = role, text = text))
+                                    }
+                                }
                             }
                             val reply = StringBuilder()
                             val thoughts = StringBuilder()
@@ -505,6 +520,38 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                         is StreamEvent.ProviderChanged -> activeModel = event.config.model
                                         is StreamEvent.Failure -> errorMsg = event.message
                                         else -> {}
+                                    }
+                                }
+                            }
+                            val answer = if (reply.isNotEmpty()) reply.toString() else (errorMsg ?: "No response")
+                            val responseHistory = synchronized(chatHistoryLock) {
+                                val latest = runCatching {
+                                    if (historyFile.isFile) JSONArray(historyFile.readText()) else JSONArray()
+                                }.getOrDefault(JSONArray())
+                                if (reply.isNotEmpty()) {
+                                    latest.put(JSONObject().put("role", "assistant").put("content", answer))
+                                    while (latest.length() > 40) latest.remove(0)
+                                    val temp = File(historyFile.parentFile, historyFile.name + ".next")
+                                    temp.writeText(latest.toString())
+                                    if (!temp.renameTo(historyFile)) {
+                                        temp.delete()
+                                        historyFile.writeText(latest.toString())
+                                    }
+                                }
+                                latest
+                            }
+                            val replyPayload = JSONObject()
+                                .put("ok", errorMsg == null || reply.isNotEmpty())
+                                .put("model", activeModel)
+                                .put("thinking", thoughts.toString())
+                                .put("reply", answer)
+                                .put("messages", responseHistory)
+                            writeHttpResponse(sock, if (replyPayload.optBoolean("ok")) 200 else 502, "application/json; charset=utf-8", replyPayload.toString())
+                        } finally {
+                            bridgeChatBusy.set(false)
+                        }
+                    }
+                    else -> {}
                                     }
                                 }
                             }
