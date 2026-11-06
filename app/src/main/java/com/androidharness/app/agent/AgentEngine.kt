@@ -1783,7 +1783,7 @@ class AgentEngine(
             val specialistPrompt = "You are ${title ?: "Specialist"} in a collaborative multi-model AI engineering team. " +
                 "Provide a concise, high-impact 4-bullet implementation blueprint with concrete file names and component details so the lead agent can build immediately."
             try {
-                kotlinx.coroutines.withTimeout(5_000L) {
+                kotlinx.coroutines.withTimeoutOrNull(5_000L) {
                     provider.streamChat(
                         config = config,
                         apiKey = apiKey,

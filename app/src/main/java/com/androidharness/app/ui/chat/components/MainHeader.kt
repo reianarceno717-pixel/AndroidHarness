@@ -337,6 +337,41 @@ internal fun MainHeader(
                                 },
                                 onClick = { menu = false; onOpenContext() },
                             )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (com.androidharness.app.FloatingBubbleService.isRunning()) {
+                                            "Stop Floating AI Bubble"
+                                        } else {
+                                            "Start Floating AI Bubble"
+                                        }
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.VolumeUp, contentDescription = null)
+                                },
+                                onClick = {
+                                    menu = false
+                                    if (com.androidharness.app.FloatingBubbleService.isRunning()) {
+                                        com.androidharness.app.FloatingBubbleService.stop(uiContext)
+                                    } else {
+                                        com.androidharness.app.FloatingBubbleService.start(uiContext)
+                                    }
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Virtual Phone & Hotspot Bridge") },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.Language, contentDescription = null)
+                                },
+                                onClick = {
+                                    menu = false
+                                    uiContext.startActivity(
+                                        android.content.Intent(uiContext, com.androidharness.app.LaptopConnectionActivity::class.java)
+                                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                },
+                            )
                             if (!conversation.isChat) {
                                 HorizontalDivider(Modifier.padding(vertical = 6.dp))
                                 DropdownMenuItem(

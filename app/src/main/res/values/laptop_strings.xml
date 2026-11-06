@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="settings_page_laptop_title" translatable="false">Virtual device &amp; laptop bridge</string>
-    <string name="settings_page_laptop_desc" translatable="false">Use this app virtually on another phone or laptop over Hotspot/Wi-Fi/USB, nothing to install</string>
+    <string name="settings_page_laptop_title" translatable="false">Laptop bridge</string>
+    <string name="settings_page_laptop_desc" translatable="false">Use this app on your laptop over USB, nothing to install</string>
     <string name="laptop_section_title" translatable="false">Virtual phone &amp; laptop studio</string>
     <string name="laptop_section_desc" translatable="false">Connect any other phone or laptop to this phone via Wi-Fi hotspot, local network, or Type-C cable. The address below opens the full AndroidHarness AI agent studio in the other device\'s browser — zero installation needed on the other device.</string>
     <string name="laptop_open_button" translatable="false">Open virtual bridge</string>
