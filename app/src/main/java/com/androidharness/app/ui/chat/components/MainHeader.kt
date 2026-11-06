@@ -32,8 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.VolumeUp
-import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Archive
@@ -211,7 +210,7 @@ internal fun MainHeader(
                     if (onToggleTtsAlwaysSpeak != null) {
                         ExpressiveIconButton(glassChrome = true, onClick = onToggleTtsAlwaysSpeak) {
                             Icon(
-                                if (ttsAlwaysSpeak) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                                Icons.Outlined.VolumeUp,
                                 contentDescription = if (ttsAlwaysSpeak) "Auto-voice reading enabled (tap to mute)" else "Auto-voice reading muted (tap to enable)",
                                 modifier = Modifier.size(18.dp),
                                 tint = if (ttsAlwaysSpeak) scheme.primary else scheme.onSurfaceVariant.copy(alpha = 0.55f),
@@ -463,7 +462,7 @@ private fun DesktopConversationHeader(
             if (onToggleTtsAlwaysSpeak != null) {
                 ExpressiveIconButton(glassChrome = true, onClick = onToggleTtsAlwaysSpeak, modifier = Modifier.size(36.dp)) {
                     Icon(
-                        if (ttsAlwaysSpeak) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                        Icons.Outlined.VolumeUp,
                         contentDescription = if (ttsAlwaysSpeak) "Auto-voice reading enabled" else "Auto-voice reading muted",
                         modifier = Modifier.size(18.dp),
                         tint = if (ttsAlwaysSpeak) scheme.primary else scheme.onSurfaceVariant.copy(alpha = 0.55f),
