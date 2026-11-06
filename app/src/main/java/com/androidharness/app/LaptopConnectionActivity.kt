@@ -318,15 +318,26 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
                 var contentLength = 0
                 var authorization: String? = null
-                while (true) {
+                var headerBytes = 0
+                var headersComplete = false
+                while (headerBytes <= 32 * 1024) {
                     val header = readHttpLine() ?: break
-                    if (header.isEmpty()) break
+                    headerBytes += header.length + 2
+                    if (headerBytes > 32 * 1024) break
+                    if (header.isEmpty()) {
+                        headersComplete = true
+                        break
+                    }
                     when {
                         header.lowercase().startsWith("content-length:") ->
-                            contentLength = header.substringAfter(":").trim().toIntOrNull() ?: 0
+                            contentLength = header.substringAfter(":").trim().toIntOrNull() ?: -1
                         header.lowercase().startsWith("authorization:") ->
                             authorization = header.substringAfter(":").trim()
                     }
+                }
+                if (!headersComplete) {
+                    writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"HTTP headers are incomplete or exceed the 32 KB limit"}""")
+                    return
                 }
 
                 if (contentLength < 0 || contentLength > 2 * 1024 * 1024) {
@@ -510,6 +521,10 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 "Content-Type: $contentType\r\n" +
                 "Content-Length: ${bytes.size}\r\n" +
                 "Cache-Control: no-store\r\n" +
+                "X-Content-Type-Options: nosniff\r\n" +
+                "X-Frame-Options: DENY\r\n" +
+                "Referrer-Policy: no-referrer\r\n" +
+                "Content-Security-Policy: default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:;\r\n" +
                 "Connection: close\r\n\r\n"
             val out = sock.getOutputStream()
             out.write(headers.toByteArray(Charsets.UTF_8))
