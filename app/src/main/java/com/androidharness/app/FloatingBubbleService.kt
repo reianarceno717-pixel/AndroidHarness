@@ -52,6 +52,7 @@ class FloatingBubbleService : Service() {
     private var tts: TextToSpeech? = null
     private var isTtsReady = false
     private var speechRecognizer: SpeechRecognizer? = null
+    private val conversationHistory = mutableListOf<Pair<String, String>>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -417,15 +418,20 @@ class FloatingBubbleService : Service() {
     private fun askAssistant(prompt: String, messageBox: TextView) {
         messageBox.text = "You: $prompt\n\nAI Team working..."
         scope.launch {
+            conversationHistory += "user" to prompt
             val reply = withContext(Dispatchers.IO) {
-                queryLocalOrRemoteModel(prompt)
+                queryLocalOrRemoteModel(prompt, conversationHistory.toList())
             }
-            messageBox.text = "You: $prompt\n\nAI: $reply"
+            conversationHistory += "assistant" to reply
+            while (conversationHistory.size > 40) conversationHistory.removeAt(0)
+            messageBox.text = conversationHistory.takeLast(8).joinToString("\n\n") { (role, text) ->
+                "${if (role == "user") "You" else "AI"}: $text"
+            }
             speakText(reply)
         }
     }
 
-    private fun queryLocalOrRemoteModel(prompt: String): String {
+    private fun queryLocalOrRemoteModel(prompt: String, history: List<Pair<String, String>>): String {
         return try {
             val port = LaptopConnectionActivity.activePort
             val url = java.net.URL("http://127.0.0.1:$port/api/chat")
@@ -437,7 +443,11 @@ class FloatingBubbleService : Service() {
             conn.connectTimeout = 8000
             conn.readTimeout = 15000
 
-            val json = org.json.JSONObject().put("prompt", prompt).toString()
+            val messages = org.json.JSONArray()
+            history.forEach { (role, text) ->
+                messages.put(org.json.JSONObject().put("role", role).put("content", text))
+            }
+            val json = org.json.JSONObject().put("prompt", prompt).put("messages", messages).toString()
             conn.outputStream.use { it.write(json.toByteArray(Charsets.UTF_8)) }
 
             val responseStream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
