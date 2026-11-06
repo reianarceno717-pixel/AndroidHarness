@@ -338,7 +338,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     method == "GET" && path == "/api/files" -> {
                         val files = JSONArray()
                         workspaceDir.walkTopDown().maxDepth(4).forEach { file ->
-                            if (file.isFile) {
+                            if (file.isFile && file.name != ".androidharness-chat-history.json" &&
+                                !file.name.endsWith(".androidharness-chat-history.json.next")) {
                                 val rel = file.relativeTo(workspaceDir).path
                                 files.put(
                                     JSONObject()
