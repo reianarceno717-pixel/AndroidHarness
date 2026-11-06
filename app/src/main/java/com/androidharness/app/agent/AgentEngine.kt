@@ -355,14 +355,28 @@ class AgentEngine(
             (chatOnlyTools.firstOrNull { it.name == "browser_read" } as? com.androidharness.app.tools.BrowserReadTool)
                 ?.forBudget(scopedSearch?.budget())
         } else null
-        val imageCapable = (if (conversation.isChat) options.modelCatalogs[config.id]?.firstOrNull { it.id == config.model }?.imageInput else null)
+        var imageCapable = (if (conversation.isChat) options.modelCatalogs[config.id]?.firstOrNull { it.id == config.model }?.imageInput else null)
             ?: com.androidharness.app.llm.visionCapable(config.model)
         val chatHistory = if (agentContextEnabled) history else com.androidharness.app.local.LocalChatCodec.plainChatMessages(history)
         // Resolve first; delivery status is reconciled with the actual request bytes below.
         val resolvedHistory = chatHistory.map { it.withImagesResolved() }
+        val turnHasImages = resolvedHistory.any { it.images.isNotEmpty() || it.imageData.isNotEmpty() }
+        // Smart dynamic model routing: when images are attached and the selected model is text-only,
+        // automatically switch to a vision-capable model in the provider catalog before stripping images.
+        if (!localChat && !imageCapable && turnHasImages) {
+            val catalogVisionModel = options.modelCatalogs[config.id]
+                ?.firstOrNull { it.imageInput == true || com.androidharness.app.llm.visionCapable(it.id) }
+                ?.id
+                ?: if (config.id == com.androidharness.app.llm.HarnessProvider.ID) com.androidharness.app.llm.HarnessProvider.DEFAULT_MODEL else null
+            if (catalogVisionModel != null && catalogVisionModel != config.model) {
+                config = config.copy(model = catalogVisionModel)
+                imageCapable = true
+                emit(AgentEvent.ProviderChanged(config, "Smart routing: switched to $catalogVisionModel for image support", persistSelection = false))
+            }
+        }
         val working = (if (conversation.isChat && imageCapable)
             ChatImageContext.attach(resolvedHistory, resolve = imageStore::resolve, load = imageStore::remoteImage) else resolvedHistory).toMutableList()
-        // If active model is known to be text-only, strip image data upfront
+        // If no vision-capable model was available on this provider, strip image data as a safe fallback
         if (!localChat && !imageCapable) {
             val sanitized = ContextHygiene.stripImages(working)
             working.clear()
@@ -543,7 +557,13 @@ class AgentEngine(
             val streamEventHandler: suspend (StreamEvent) -> Unit = { event ->
                 val previousTiming = thinkingTiming
                 thinkingTiming = thinkingTiming.observe(event, ThinkingTiming.now())
-                if (event.hasResponseOutput()) responseStarted = true
+                if (event is StreamEvent.TextDelta && event.text.isNotEmpty() ||
+                    event is StreamEvent.ToolCallDelta ||
+                    event is StreamEvent.ToolCallReady ||
+                    event is StreamEvent.ToolCallBatch
+                ) {
+                    responseStarted = true
+                }
                 when (event) {
                     is StreamEvent.ProviderChanged -> {
                         config = event.config
@@ -646,7 +666,7 @@ class AgentEngine(
                     calls = mutableListOf()
                     lastFinishReason = null
                 },
-                hasOutput = { responseStarted || text.isNotEmpty() || thinking.isNotEmpty() || calls.isNotEmpty() },
+                hasOutput = { responseStarted || text.isNotEmpty() || calls.isNotEmpty() },
                 handleEvent = streamEventHandler,
                 retryReason = { f -> f.take(200) },
                 emitEvent = { emit(it) },
@@ -688,7 +708,7 @@ class AgentEngine(
                         calls = mutableListOf()
                         lastFinishReason = null
                     },
-                    hasOutput = { responseStarted || text.isNotEmpty() || thinking.isNotEmpty() || calls.isNotEmpty() },
+                    hasOutput = { responseStarted || text.isNotEmpty() || calls.isNotEmpty() },
                     handleEvent = streamEventHandler,
                     retryReason = { f -> f.take(200) },
                     emitEvent = { emit(it) },
@@ -2239,7 +2259,8 @@ Rules:
 - Text files follow the POSIX convention: the last line ends with a newline terminator. When patching or editing, never add an extra empty line for the file's final newline.
 - When reporting file properties like newlines or byte counts, verify with a byte check (file_info or shell tail -c 3 | xxd) rather than inferring from line counts.
 - For Android logs, exceptions, or app crash investigations, use read_logcat instead of raw shell logcat commands. It supports level, tag, package_name, and buffer filtering.
-- For broad exploration whose raw output would flood this conversation (finding all usages, mapping a codebase, comparing many files), delegate to the task tool: it runs a read-only subagent and returns only the final answer. When several independent explorations are needed, issue ALL task calls in the SAME message: they run concurrently.
+- For broad exploration whose raw output would flood this conversation (finding all usages, mapping a codebase, comparing many files), delegate to the task tool: it runs a subagent and returns only the final answer. When several independent explorations or build tasks are needed, issue ALL task calls in the SAME message: they run concurrently.
+- MULTI-MODEL TEAM PARALLELISM: For complex or multi-file coding, 3D/web design, or multi-component requests, proactively divide the work across a team of 2 to 3 parallel `task` subagent calls in the SAME turn (for example: one subagent for core architecture/3D scene logic, one for UI components/styling, and one for assets/data integration) so a team of models works simultaneously for faster execution and higher-quality results.
 
 """.trim()
         )
