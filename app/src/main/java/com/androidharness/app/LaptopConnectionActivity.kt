@@ -62,7 +62,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
         isTetheringEnabled = true
         enableButton.text = getString(R.string.laptop_disable_tethering)
         copyButton.isEnabled = true
-        addressText.text = getString(R.string.laptop_address_example)
+        addressText.text = "192.168.42.1:8080 (typical)"
     }
 
     private fun stopUsbTethering() {
