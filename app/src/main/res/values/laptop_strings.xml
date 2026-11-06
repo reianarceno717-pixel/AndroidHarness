@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_page_laptop_title" translatable="false">Laptop bridge</string>
+    <string name="settings_page_laptop_desc" translatable="false">Use this app on your laptop over USB, nothing to install</string>
+    <string name="laptop_section_title" translatable="false">Use on your laptop</string>
+    <string name="laptop_section_desc" translatable="false">Connect your phone to your laptop with the Type-C charging cable, then tap the button below. The next screen shows the address to type into your laptop browser. Nothing is installed on the laptop.</string>
+    <string name="laptop_open_button" translatable="false">Open laptop connection</string>
+    <string name="laptop_status_idle" translatable="false">Not connected yet</string>
+    <string name="laptop_status_tethering_on" translatable="false">USB tethering is on — type the address below in your laptop browser</string>
+    <string name="laptop_status_tethering_off" translatable="false">USB tethering turned off</string>
+    <string name="laptop_status_unavailable" translatable="false">USB tethering is not available on this device. Turn it on from Android Settings → Network → Hotspot & tethering, then come back here for the address.</string>
+    <string name="laptop_address_label" translatable="false">Address for your laptop</string>
+    <string name="laptop_address_placeholder" translatable="false">—</string>
+    <string name="laptop_type_hint" translatable="false">Open Chrome, Firefox or Edge on the laptop and type this address in the address bar.</string>
+    <string name="laptop_enable_tethering" translatable="false">Turn on USB tethering</string>
+    <string name="laptop_disable_tethering" translatable="false">Turn off USB tethering</string>
+    <string name="laptop_copy_address" translatable="false">Copy address</string>
+    <string name="laptop_copied" translatable="false">Address copied</string>
+    <string name="laptop_howto_title" translatable="false">How to connect</string>
+    <string name="laptop_howto_body" translatable="false">1. Connect your phone to the laptop with the Type-C charging cable.\n2. Tap "Turn on USB tethering".\n3. Read the address on this screen.\n4. Type that address into your laptop browser.\n\nNo camera is needed and nothing is installed on the laptop.</string>
+</resources>
