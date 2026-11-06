@@ -453,8 +453,6 @@ class FloatingBubbleService : Service() {
             val reply = withContext(Dispatchers.IO) {
                 queryLocalOrRemoteModel(prompt, conversationHistory.toList())
             }
-            conversationHistory += "assistant" to reply
-            while (conversationHistory.size > 40) conversationHistory.removeAt(0)
             messageBox.text = conversationHistory.takeLast(8).joinToString("\n\n") { (role, text) ->
                 "${if (role == "user") "You" else "AI"}: $text"
             }
@@ -485,6 +483,17 @@ class FloatingBubbleService : Service() {
             val response = responseStream?.bufferedReader()?.use { it.readText() }.orEmpty()
             if (conn.responseCode !in 200..299) return "AndroidHarness bridge error (HTTP ${conn.responseCode}): ${response.take(240)}"
             val resObj = org.json.JSONObject(response)
+            resObj.optJSONArray("messages")?.let { shared ->
+                conversationHistory.clear()
+                for (i in 0 until shared.length()) {
+                    val item = shared.optJSONObject(i) ?: continue
+                    val role = item.optString("role")
+                    val text = item.optString("content")
+                    if ((role == "user" || role == "assistant") && text.isNotBlank()) {
+                        conversationHistory += role to text
+                    }
+                }
+            }
             resObj.optString("reply", "Done.")
         } catch (_: Exception) {
             "I'm here to help! Connect to Wi-Fi/Hotspot or open AndroidHarness to run larger coding tasks."
