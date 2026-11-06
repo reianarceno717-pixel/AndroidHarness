@@ -376,6 +376,47 @@ class FloatingBubbleService : Service() {
         inputRow.addView(sendBtn)
         root.addView(inputRow)
 
+        val resizeHandle = TextView(this).apply {
+            text = "↘ Resize"
+            textSize = 11f
+            setTextColor(Color.parseColor("#94A3B8"))
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(8), dp(4), dp(2))
+        }
+        var resizeWidth = width
+        var resizeHeight = height
+        var resizeStartX = 0f
+        var resizeStartY = 0f
+        var resizeInitialWidth = width
+        var resizeInitialHeight = height
+        resizeHandle.setOnTouchListener { _, event ->
+            val params = overlayParams ?: return@setOnTouchListener false
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    resizeStartX = event.rawX
+                    resizeStartY = event.rawY
+                    resizeInitialWidth = params.width
+                    resizeInitialHeight = params.height
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val minWidth = dp(260)
+                    val minHeight = dp(240)
+                    val maxWidth = (resources.displayMetrics.widthPixels * 0.96f).toInt()
+                    val maxHeight = (resources.displayMetrics.heightPixels * 0.85f).toInt()
+                    params.width = (resizeInitialWidth + event.rawX - resizeStartX).toInt().coerceIn(minWidth, maxWidth)
+                    params.height = (resizeInitialHeight + event.rawY - resizeStartY).toInt().coerceIn(minHeight, maxHeight)
+                    windowManager.updateViewLayout(root, params)
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+        root.addView(resizeHandle, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(28)
+        ))
+
         overlayView = root
         windowManager.addView(root, overlayParams)
         scope.launch {
