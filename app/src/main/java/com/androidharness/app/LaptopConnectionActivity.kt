@@ -801,7 +801,7 @@ async function saveCurrentFile() {
 
 async function refreshBridgeStatus() {
   const label = document.getElementById("status-meta");
-  if (!label || !authToken) return;
+  if (!label || !sessionToken) return;
   try {
     const res = await apiFetch("/api/chat/status");
     const data = await res.json();
