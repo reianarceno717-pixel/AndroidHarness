@@ -448,6 +448,19 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
                         }
                     }
+                    method == "GET" && path == "/api/chat/status" -> {
+                        val historyFile = File(workspaceDir, ".androidharness-chat-history.json")
+                        val messageCount = synchronized(chatHistoryLock) {
+                            runCatching {
+                                if (historyFile.isFile) JSONArray(historyFile.readText()).length() else 0
+                            }.getOrDefault(0)
+                        }
+                        val status = JSONObject()
+                            .put("ok", true)
+                            .put("busy", bridgeChatBusy.get())
+                            .put("messageCount", messageCount)
+                        writeHttpResponse(sock, 200, "application/json; charset=utf-8", status.toString())
+                    }
                     method == "GET" && path == "/api/chat/history" -> {
                         val historyFile = File(workspaceDir, ".androidharness-chat-history.json")
                         val history = synchronized(chatHistoryLock) {
