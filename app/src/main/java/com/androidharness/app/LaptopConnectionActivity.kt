@@ -282,7 +282,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     val socket = ServerSocket(port)
                     serverSocket = socket
                     activePort = port
-                    executor.execute {
+                    Thread({
                         while (!socket.isClosed) {
                             try {
                                 val client = socket.accept()
@@ -296,7 +296,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 if (socket.isClosed) break
                             }
                         }
-                    }
+                    }, "AndroidHarness-Bridge-Accept").apply { isDaemon = true }.start()
                     break
                 } catch (_: Exception) {
                 }
