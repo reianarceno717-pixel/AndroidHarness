@@ -501,6 +501,8 @@ class FloatingBubbleService : Service() {
                 val reply = withContext(Dispatchers.IO) {
                     queryLocalOrRemoteModel(prompt, conversationHistory.toList())
                 }
+                if (reply.isNotBlank()) conversationHistory += "assistant" to reply
+                while (conversationHistory.size > 40) conversationHistory.removeAt(0)
                 messageBox.text = conversationHistory.takeLast(8).joinToString("\n\n") { (role, text) ->
                     "${if (role == "user") "You" else "AI"}: $text"
                 }
