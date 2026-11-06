@@ -2,6 +2,7 @@ package com.androidharness.app
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
@@ -9,22 +10,10 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.androidharness.app.R
 
-/**
- * Laptop Connection Activity — hosts the AndroidHarness AI on this phone so your laptop
- * can use it directly through a web browser.
- *
- * Flow:
- *   1. Connect phone to laptop via Type-C charging cable
- *   2. Tap "Enable USB Tethering" — phone becomes a network gateway
- *   3. Phone displays its IP address (e.g., 192.168.42.1:8080)
- *   4. Open Chrome/Firefox/Edge on your laptop → type the IP shown on phone
- *   5. You're now using the AI directly on your laptop browser
- *
- * No camera needed. No software install on laptop.
- */
 class LaptopConnectionActivity : AppCompatActivity() {
 
-    private lateinit var isTetheringEnabled = false
+    private lateinit var connectivityManager: ConnectivityManager
+    private var isTetheringEnabled = false
 
     private lateinit var statusText: TextView
     private lateinit var addressText: TextView
@@ -34,6 +23,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_laptop_connection)
+
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
         statusText = findViewById(R.id.laptop_status)
         addressText = findViewById(R.id.laptop_ip)
@@ -71,7 +62,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
         isTetheringEnabled = true
         enableButton.text = getString(R.string.laptop_disable_tethering)
         copyButton.isEnabled = true
-        addressText.text = "192.168.42.1:8080 (typical)"
+        addressText.text = getString(R.string.laptop_address_example)
     }
 
     private fun stopUsbTethering() {
@@ -98,27 +89,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
     }
 
     private fun refresh() {
-        // Show typical address - actual detection not available in this build environment
-        addressText.text = "192.168.42.1:8080 (typical)"
+        addressText.text = getString(R.string.laptop_address_example)
         statusText.text = getString(R.string.laptop_status_tethering_off)
+        statusText.setTextColor(android.graphics.Color.WHITE)
         isTetheringEnabled = false
         enableButton.text = getString(R.string.laptop_enable_tethering)
         copyButton.isEnabled = false
-        statusText.text = getString(R.string.laptop_status_tethering_off)
-        statusText.setTextColor(android.graphics.Color.WHITE)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun tryUsbTethering(enable: Boolean): Boolean {
-        return try {
-            val method = connectivityManager::class.java.getMethod(
-                if (enable) "startUsbTethering" else "stopUsbTethering"
-            )
-            method.isAccessible = true
-            method.invoke(connectivityManager) as Boolean
-        } catch (e: Exception) {
-            false
-        }
     }
 
     @SuppressLint("MissingPermission")
