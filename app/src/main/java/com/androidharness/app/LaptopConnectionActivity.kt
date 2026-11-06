@@ -705,10 +705,18 @@ async function saveCurrentFile() {
   loadFiles();
 }
 
+let chatRequestInFlight = false;
 async function sendPrompt() {
+  if (chatRequestInFlight) return;
   const input = document.getElementById("prompt-input");
   const text = input.value.trim();
   if (!text) return;
+  chatRequestInFlight = true;
+  const sendButton = document.querySelector(".chat-input button:last-child");
+  if (sendButton) {
+    sendButton.disabled = true;
+    sendButton.textContent = "Working…";
+  }
   input.value = "";
   const box = document.getElementById("chat-box");
   const u = document.createElement("div");
@@ -742,6 +750,12 @@ async function sendPrompt() {
     }
   } catch (e) {
     a.textContent = "Error communicating with phone: " + e.message;
+  } finally {
+    chatRequestInFlight = false;
+    if (sendButton) {
+      sendButton.disabled = false;
+      sendButton.textContent = "Send";
+    }
   }
   box.scrollTop = box.scrollHeight;
 }
