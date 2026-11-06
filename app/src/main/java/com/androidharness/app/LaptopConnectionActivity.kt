@@ -323,8 +323,13 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     }
                 }
 
+                if (contentLength < 0 || contentLength > 2 * 1024 * 1024) {
+                    writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"Request body exceeds the 2 MB limit"}""")
+                    return
+                }
+
                 val body = if (contentLength > 0) {
-                    val buf = ByteArray(contentLength.coerceAtMost(2 * 1024 * 1024))
+                    val buf = ByteArray(contentLength)
                     var read = 0
                     while (read < buf.size) {
                         val count = input.read(buf, read, buf.size - read)
