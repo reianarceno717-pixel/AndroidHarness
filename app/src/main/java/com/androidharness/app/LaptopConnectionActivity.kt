@@ -298,17 +298,24 @@ class LaptopConnectionActivity : AppCompatActivity() {
             client.use { sock ->
                 sock.soTimeout = 60_000
                 val input = sock.getInputStream()
+                var httpLineTooLong = false
                 fun readHttpLine(): String? {
                     val bytes = java.io.ByteArrayOutputStream()
+                    httpLineTooLong = false
                     while (bytes.size() < 16 * 1024) {
                         val next = input.read()
                         if (next < 0) return if (bytes.size() == 0) null else bytes.toString(Charsets.ISO_8859_1.name())
                         if (next == 10) break
                         if (next != 13) bytes.write(next)
                     }
+                    if (bytes.size() >= 16 * 1024) httpLineTooLong = true
                     return bytes.toString(Charsets.ISO_8859_1.name())
                 }
                 val requestLine = readHttpLine() ?: return
+                if (httpLineTooLong) {
+                    writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"HTTP request line exceeds the 16 KB limit"}""")
+                    return
+                }
                 val parts = requestLine.split(" ")
                 if (parts.size < 2) return
                 val method = parts[0].uppercase()
@@ -322,6 +329,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 var headersComplete = false
                 while (headerBytes <= 32 * 1024) {
                     val header = readHttpLine() ?: break
+                    if (httpLineTooLong) break
                     headerBytes += header.length + 2
                     if (headerBytes > 32 * 1024) break
                     if (header.isEmpty()) {
