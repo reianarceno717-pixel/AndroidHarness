@@ -491,7 +491,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         }
                     }
                     method == "POST" && path == "/api/file" -> {
-                        val payload = JSONObject(body.ifBlank { "{}" })
+                        val payload = try {
+                            JSONObject(body.ifBlank { "{}" })
+                        } catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
                         val relPath = payload.optString("path").trim().removePrefix("/")
                         val content = payload.optString("content")
                         val target = File(workspaceDir, relPath).canonicalFile
@@ -525,7 +530,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         writeHttpResponse(sock, 200, "application/json; charset=utf-8", JSONObject().put("messages", history).toString())
                     }
                     method == "POST" && path == "/api/chat" -> {
-                        val payload = JSONObject(body.ifBlank { "{}" })
+                        val payload = try {
+                            JSONObject(body.ifBlank { "{}" })
+                        } catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
                         val prompt = payload.optString("prompt").trim()
                         val model = payload.optString("model").ifBlank { HarnessProvider.DEFAULT_MODEL }
                         if (prompt.isEmpty()) {
