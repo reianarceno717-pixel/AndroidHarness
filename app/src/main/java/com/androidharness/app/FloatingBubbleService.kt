@@ -378,6 +378,37 @@ class FloatingBubbleService : Service() {
 
         overlayView = root
         windowManager.addView(root, overlayParams)
+        scope.launch {
+            val shared = withContext(Dispatchers.IO) { loadSharedChatHistory() }
+            if (shared != null) {
+                conversationHistory.clear()
+                for (i in 0 until shared.length()) {
+                    val item = shared.optJSONObject(i) ?: continue
+                    val role = item.optString("role")
+                    val text = item.optString("content")
+                    if ((role == "user" || role == "assistant") && text.isNotBlank()) {
+                        conversationHistory += role to text
+                    }
+                }
+                messageBox.text = conversationHistory.takeLast(8).joinToString("\\n\\n") { (role, text) ->
+                    "${if (role == "user") "You" else "AI"}: $text"
+                }.ifBlank { "Ask anything with voice or text, or tap 'What's on screen?' to analyze whatever you are viewing!" }
+            }
+        }
+    }
+
+    private fun loadSharedChatHistory(): org.json.JSONArray? {
+        return runCatching {
+            val url = java.net.URL("http://127.0.0.1:${LaptopConnectionActivity.activePort}/api/chat/history")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("Authorization", LaptopConnectionActivity.localBridgeAuthorization())
+            conn.connectTimeout = 4000
+            conn.readTimeout = 5000
+            if (conn.responseCode !in 200..299) return@runCatching null
+            val response = conn.inputStream.bufferedReader().use { it.readText() }
+            org.json.JSONObject(response).optJSONArray("messages")
+        }.getOrNull()
     }
 
     private fun startVoiceInput(messageBox: TextView) {
