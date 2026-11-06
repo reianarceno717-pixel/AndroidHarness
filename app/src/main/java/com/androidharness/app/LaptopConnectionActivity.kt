@@ -799,9 +799,11 @@ async function saveCurrentFile() {
   loadFiles();
 }
 
+let bridgeRefreshInFlight = false;
 async function refreshBridgeStatus() {
   const label = document.getElementById("status-meta");
-  if (!label || !sessionToken) return;
+  if (!label || !sessionToken || bridgeRefreshInFlight) return;
+  bridgeRefreshInFlight = true;
   try {
     const res = await apiFetch("/api/chat/status");
     const data = await res.json();
@@ -812,6 +814,8 @@ async function refreshBridgeStatus() {
     await refreshSharedChatHistory();
   } catch (_) {
     label.textContent = "AndroidHarness · Connection status unavailable";
+  } finally {
+    bridgeRefreshInFlight = false;
   }
 }
 let chatRequestInFlight = false;
