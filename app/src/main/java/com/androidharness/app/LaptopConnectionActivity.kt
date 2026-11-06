@@ -458,19 +458,25 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         writeHttpResponse(sock, 200, "application/json; charset=utf-8", json.toString())
                     }
                     method == "GET" && path == "/api/files" -> {
-                        val files = JSONArray()
-                        workspaceDir.walkTopDown().maxDepth(4).forEach { file ->
-                            if (file.isFile && file.name != ".androidharness-chat-history.json" &&
-                                !file.name.endsWith(".androidharness-chat-history.json.next")) {
-                                val rel = file.relativeTo(workspaceDir).path
-                                files.put(
-                                    JSONObject()
-                                        .put("path", rel)
-                                        .put("size", file.length())
-                                )
+                        val visibleFiles = workspaceDir.walkTopDown().maxDepth(4)
+                            .filter { file ->
+                                file.isFile && file.name != ".androidharness-chat-history.json" &&
+                                    !file.name.endsWith(".androidharness-chat-history.json.next")
                             }
+                            .take(501)
+                            .toList()
+                        val files = JSONArray()
+                        visibleFiles.take(500).forEach { file ->
+                            val rel = file.relativeTo(workspaceDir).path
+                            files.put(
+                                JSONObject()
+                                    .put("path", rel)
+                                    .put("size", file.length())
+                            )
                         }
-                        val json = JSONObject().put("files", files)
+                        val json = JSONObject()
+                            .put("files", files)
+                            .put("truncated", visibleFiles.size > 500)
                         writeHttpResponse(sock, 200, "application/json; charset=utf-8", json.toString())
                     }
                     method == "GET" && path == "/api/file" -> {
@@ -483,6 +489,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         val target = File(workspaceDir, relPath).canonicalFile
                         if (isBridgeInternalPath(relPath) || !target.path.startsWith(workspaceDir.canonicalPath + File.separator) || !target.isFile) {
                             writeHttpResponse(sock, 404, "application/json; charset=utf-8", """{"error":"File not found"}""")
+                        } else if (target.length() > 2 * 1024 * 1024) {
+                            writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"File exceeds the 2 MB preview limit"}""")
                         } else {
                             val json = JSONObject()
                                 .put("path", relPath)
