@@ -87,10 +87,18 @@ class GroqWhisperClientTest {
                         flush()
                     }
                     sentHeaders.complete(socket)
-                    socket.getInputStream().readBytes()
-                    closedByClient.complete(Unit)
+                    try {
+                        // Cancellation may close the peer socket with EOF or IOException;
+                        // either outcome means the stalled response-body connection was released.
+                        socket.getInputStream().readBytes()
+                    } finally {
+                        closedByClient.complete(Unit)
+                    }
                 }
-            } catch (_: Exception) { }
+            } catch (_: Exception) {
+                // Also signal if the accepted socket is torn down while the server stops.
+                closedByClient.complete(Unit)
+            }
         }
         val client = OkHttpClient.Builder().addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder().url("http://127.0.0.1:${server.localPort}/transcribe").build())
