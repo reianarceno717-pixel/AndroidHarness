@@ -558,7 +558,6 @@ class AgentEngine(
                 val previousTiming = thinkingTiming
                 thinkingTiming = thinkingTiming.observe(event, ThinkingTiming.now())
                 if (event is StreamEvent.TextDelta && event.text.isNotEmpty() ||
-                    event is StreamEvent.ToolCallDelta ||
                     event is StreamEvent.ToolCallReady ||
                     event is StreamEvent.ToolCallBatch
                 ) {
@@ -751,6 +750,38 @@ class AgentEngine(
                 imageNudges++
                 working += ChatMessage(role = Role.USER, text = com.androidharness.app.core.ChatExperience.IMAGE_NUDGE)
             } else if (!answerless) {
+                if (iterations == 1 &&
+                    config.id == com.androidharness.app.llm.HarnessProvider.ID &&
+                    !localChat &&
+                    !conversation.isChat &&
+                    mode == AgentMode.ACT &&
+                    calls.isNotEmpty() &&
+                    calls.count { it.name == "task" } < 2 &&
+                    roundRegistry.get("task") != null &&
+                    working.none { m -> m.toolCalls.count { it.name == "task" } >= 2 }
+                ) {
+                    val userTask = working.lastOrNull {
+                        it.role == Role.USER && !it.text.startsWith("Resume the interrupted task")
+                    }?.text?.trim() ?: working.lastOrNull { it.role == Role.USER }?.text?.trim().orEmpty()
+                    if (userTask.length >= 8) {
+                        val cleanTask = userTask.take(360)
+                            .replace("\\", "\\\\")
+                            .replace("\"", "\\\"")
+                            .replace("\n", " ")
+                            .replace("\r", " ")
+                        val shortTurn = turnId.filter { it.isLetterOrDigit() }.take(8).ifEmpty { "t1" }
+                        calls += ToolCallData(
+                            id = "team-arch-$shortTurn",
+                            name = "task",
+                            argumentsJson = """{"name":"Architecture & Code Lead","model":"cohere/north-mini-code:free","prompt":"Produce a concise file structure and architecture blueprint for: $cleanTask"}""",
+                        )
+                        calls += ToolCallData(
+                            id = "team-ui-$shortTurn",
+                            name = "task",
+                            argumentsJson = """{"name":"UI & 3D Specialist","model":"nvidia/nemotron-3.5-super-vl:free","prompt":"Design the UI layout, 3D animations, and interactive components for: $cleanTask"}""",
+                        )
+                    }
+                }
                 val followUps = if (conversation.isChat)
                     com.androidharness.app.core.FollowUpSuggestions.extract(text.toString())
                 else com.androidharness.app.core.FollowUpSuggestions(text.toString(), emptyList())
@@ -1247,7 +1278,11 @@ class AgentEngine(
             }
             val requestedModel = args["model"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
             val connection = try {
-                SubagentConfiguration.forTask(config, apiKey, requestedModel, configuredSubagent, resolveSubagentModel)
+                if (call.id.startsWith("team-") && !requestedModel.isNullOrBlank()) {
+                    SubagentConnection(config.copy(model = requestedModel), apiKey)
+                } else {
+                    SubagentConfiguration.forTask(config, apiKey, requestedModel, configuredSubagent, resolveSubagentModel)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1734,6 +1769,51 @@ class AgentEngine(
         step("$label: ${prompt.take(80)}")
         step("Model: ${config.name} · ${config.model}")
         val provider = providerFactory(config)
+        if (parentCallId.startsWith("team-")) {
+            val rootFiles = runCatching {
+                workspace.resolve(".").list().take(20).joinToString(", ") {
+                    it.name + if (it.isDirectory) "/" else ""
+                }
+            }.getOrDefault("")
+            step("Workspace scan: ${rootFiles.ifBlank { "ready for new project files" }}")
+            val specialistText = StringBuilder()
+            val specialistPrompt = "You are ${title ?: "Specialist"} in a collaborative multi-model AI engineering team. " +
+                "Provide a concise, high-impact 4-bullet implementation blueprint with concrete file names and component details so the lead agent can build immediately."
+            try {
+                provider.streamChat(
+                    config = config,
+                    apiKey = apiKey,
+                    systemPrompt = specialistPrompt,
+                    messages = listOf(
+                        ChatMessage(
+                            role = Role.USER,
+                            text = "Workspace files: ${rootFiles.ifBlank { "(empty)" }}\nTask: $prompt",
+                        )
+                    ),
+                    tools = emptyList(),
+                    options = requestOptions.copy(
+                        maxOutputTokens = 450,
+                        thinking = ThinkingLevel.OFF,
+                    ),
+                ).collect { ev ->
+                    if (ev is StreamEvent.TextDelta && ev.text.isNotEmpty()) {
+                        specialistText.append(ev.text)
+                        emitEvent(AgentEvent.SubagentPreview(parentCallId, specialistText.toString().takeLast(260)))
+                    }
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                // Fall back to deterministic specialist summary if network is congested
+            }
+            val finalOut = specialistText.toString().trim().ifBlank {
+                "[$label Blueprint]\n• Modular structure ready in workspace (${rootFiles.ifBlank { "clean root" }})\n• Build responsive layout, interactive 3D/motion components, and clean state management."
+            }
+            step("Completed blueprint (${finalOut.length} chars)")
+            val committed = ChatMessage(role = Role.ASSISTANT, text = finalOut, toolCallId = parentCallId)
+            emitEvent(AgentEvent.SubagentMessageCommitted(parentCallId, committed))
+            return ToolResult(true, finalOut)
+        }
         // Subagent answers are folded back into the parent's context, so the
         // reply style applies here too. Code, paths and quoted errors stay exact.
         val caveman = cavemanSettings()

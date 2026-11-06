@@ -2100,8 +2100,8 @@ private fun ChatScreenContent(
                                         }
                                     }
                                 }
-                                if (isTurnRunning || isSearchTurn) {
-                                    val taskCalls = message.toolCalls.filter { it.name == "task" && (isSearchTurn || it.id !in subagentResults) }
+                                if (isTurnRunning || isSearchTurn || message.toolCalls.any { it.id.startsWith("team-") }) {
+                                    val taskCalls = message.toolCalls.filter { it.name == "task" && (isSearchTurn || it.id !in subagentResults || it.id.startsWith("team-")) }
                                     val otherCalls = message.toolCalls.filter { it.name != "task" }
                                     if (taskCalls.size >= 2) {
                                         indexedItem(key = "message-$messageKey-subagents", contentType = ChatListContentType.Subagents) {
