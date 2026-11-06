@@ -21,9 +21,7 @@ import com.androidharness.app.llm.StreamEvent
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.ServerSocket
@@ -287,8 +285,18 @@ class LaptopConnectionActivity : AppCompatActivity() {
         private fun handleClient(client: Socket, workspaceDir: File) {
             client.use { sock ->
                 sock.soTimeout = 60_000
-                val reader = BufferedReader(InputStreamReader(sock.getInputStream(), Charsets.UTF_8))
-                val requestLine = reader.readLine() ?: return
+                val input = sock.getInputStream()
+                fun readHttpLine(): String? {
+                    val bytes = java.io.ByteArrayOutputStream()
+                    while (bytes.size() < 16 * 1024) {
+                        val next = input.read()
+                        if (next < 0) return if (bytes.size() == 0) null else bytes.toString(Charsets.ISO_8859_1.name())
+                        if (next == 10) break
+                        if (next != 13) bytes.write(next)
+                    }
+                    return bytes.toString(Charsets.ISO_8859_1.name())
+                }
+                val requestLine = readHttpLine() ?: return
                 val parts = requestLine.split(" ")
                 if (parts.size < 2) return
                 val method = parts[0].uppercase()
@@ -299,7 +307,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 var contentLength = 0
                 var authorization: String? = null
                 while (true) {
-                    val header = reader.readLine() ?: break
+                    val header = readHttpLine() ?: break
                     if (header.isEmpty()) break
                     when {
                         header.lowercase().startsWith("content-length:") ->
@@ -310,14 +318,14 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 }
 
                 val body = if (contentLength > 0) {
-                    val buf = CharArray(contentLength)
+                    val buf = ByteArray(contentLength.coerceAtMost(2 * 1024 * 1024))
                     var read = 0
-                    while (read < contentLength) {
-                        val n = reader.read(buf, read, contentLength - read)
-                        if (n <= 0) break
-                        read += n
+                    while (read < buf.size) {
+                        val count = input.read(buf, read, buf.size - read)
+                        if (count <= 0) break
+                        read += count
                     }
-                    String(buf, 0, read)
+                    String(buf, 0, read, Charsets.UTF_8)
                 } else ""
 
                 if (path.startsWith("/api/") && authorization != "Bearer $bridgeToken") {
