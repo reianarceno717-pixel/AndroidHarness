@@ -342,6 +342,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 var contentLengthSeen = false
                 var unsupportedTransferEncoding = false
                 var authorization: String? = null
+                var authorizationSeen = false
+                var malformedHeader = false
                 var headerBytes = 0
                 var headersComplete = false
                 while (headerBytes <= 32 * 1024) {
@@ -364,8 +366,19 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         }
                         header.lowercase().startsWith("transfer-encoding:") ->
                             unsupportedTransferEncoding = true
-                        header.lowercase().startsWith("authorization:") ->
+                        header.lowercase().startsWith("authorization:") -> {
+                            if (authorizationSeen) {
+                                writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Duplicate Authorization header"}""")
+                                return
+                            }
+                            authorizationSeen = true
                             authorization = header.substringAfter(":").trim()
+                        }
+                        else -> {
+                            if (!header.contains(":") || header.substringBefore(":").isBlank()) {
+                                malformedHeader = true
+                            }
+                        }
                     }
                 }
                 if (!headersComplete) {
@@ -373,6 +386,10 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     return
                 }
 
+                if (malformedHeader) {
+                    writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed HTTP header"}""")
+                    return
+                }
                 if (unsupportedTransferEncoding) {
                     writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Transfer-Encoding is not supported by this bridge"}""")
                     return
