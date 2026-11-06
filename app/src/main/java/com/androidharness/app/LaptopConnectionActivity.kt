@@ -375,6 +375,10 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         if (count <= 0) break
                         read += count
                     }
+                    if (read != contentLength) {
+                        writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Request body ended before Content-Length bytes were received"}""")
+                        return
+                    }
                     String(buf, 0, read, Charsets.UTF_8)
                 } else ""
 
