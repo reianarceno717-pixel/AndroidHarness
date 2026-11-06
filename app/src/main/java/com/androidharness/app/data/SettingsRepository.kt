@@ -25,8 +25,8 @@ enum class ProgressBarStyle { FLAT, SQUIGGLY }
 @kotlinx.serialization.Serializable
 data class AppSettings(
     val permissionMode: PermissionMode = PermissionMode.CONFIRM_RISKY,
-    val subagentFullAccess: Boolean = true,
-    val backgroundSubagents: Boolean = true,
+    val subagentFullAccess: Boolean = false,
+    val backgroundSubagents: Boolean = false,
     val subagentCompletionNotifications: Boolean = true,
     val subagentProviderId: String? = null,
     val subagentModel: String? = null,

@@ -189,10 +189,24 @@ object HarnessProvider {
     private fun responsesBody(model: String) =
         """{"model":"$model","max_output_tokens":16,"input":"hi"}"""
 
-    fun withSession(builder: Request.Builder, sessionId: String?): Request.Builder {
-        if (!sessionId.isNullOrBlank()) builder.header(SESSION_HEADER, sessionId)
-        return builder.header("User-Agent", USER_AGENT)
-    }
+    fun isOpenCode(config: ProviderConfig): Boolean =
+        config.id == ID || isOpenCode(config.baseUrl) || "opencode" in config.name.lowercase()
+
+    fun isOpenCode(baseUrl: String): Boolean =
+        "opencode" in baseUrl.lowercase()
+
+    /**
+     * The identity header set every Zen client is expected to send: a stable
+     * session id, a fresh per-request id, and a self-declared client name.
+     * Requests missing them come back as FreeTierError / 500 from the relay.
+     */
+    fun withSession(builder: Request.Builder, sessionId: String?): Request.Builder =
+        builder
+            .header(SESSION_HEADER, sessionId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString())
+            .header("x-opencode-request", UUID.randomUUID().toString())
+            .header("x-opencode-client", "harness")
+            .header("x-opencode-project", "default")
+            .header("User-Agent", USER_AGENT)
 
     fun anonymous(request: Request): Request {
         val builder = request.newBuilder()
