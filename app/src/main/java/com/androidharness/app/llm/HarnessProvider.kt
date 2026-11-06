@@ -35,7 +35,7 @@ object HarnessProvider {
     const val KEYLESS = "harness-keyless"
     const val SESSION_HEADER = "x-opencode-session"
     const val USER_AGENT = "AndroidHarness"
-    private const val FIRST_OUTPUT_TIMEOUT_MS = 25_000L
+    private const val FIRST_OUTPUT_TIMEOUT_MS = 12_000L
     private const val UPSTREAM_COOLDOWN_MS = 60_000L
 
     val config = ProviderConfig(ID, "Harness", ProviderType.OPENAI_COMPAT, BASE_URL, DEFAULT_MODEL)
@@ -359,6 +359,28 @@ object HarnessProvider {
                 },
             )
 
+            // 1b. Fast pool priority for sub-second responses and instant failover
+            val fastPoolModels = listOf(
+                "cohere/north-mini-code:free",
+                "nvidia/nemotron-3.5-super-vl:free",
+                "nvidia/nemotron-3.5-lightning:free",
+            )
+            for (fm in fastPoolModels) {
+                if (needsVision && !visionCapable(fm)) continue
+                val key = "$KILO_BASE_URL#$fm"
+                if (rawCandidates.none { it.key == key }) {
+                    val altConfig = config.copy(model = fm)
+                    rawCandidates += UpstreamCandidate(
+                        key = key,
+                        model = fm,
+                        baseUrl = KILO_BASE_URL,
+                        streamFactory = {
+                            singleUpstreamStream(pooledClient, altConfig, apiKey, systemPrompt, messages, tools, options)
+                        },
+                    )
+                }
+            }
+
             // 2. OpenCode Zen gateway fallback for instant quota/stall recovery
             val zenModel = if (effectivePrimaryModel == pollinations.id) DEFAULT_MODEL else effectivePrimaryModel
             if (primaryBaseUrl != BASE_URL) {
@@ -414,25 +436,10 @@ object HarnessProvider {
                 var lastFailure: StreamEvent.Failure? = null
 
                 for ((index, candidate) in orderedCandidates.withIndex()) {
-                    var visibleOutputEmitted = false
+                    var committedOutput = false
+                    val pendingDraftEvents = mutableListOf<StreamEvent>()
                     var candidateFailed: StreamEvent.Failure? = null
-
                     try {
-                        if (candidate.model != activeModel) {
-                            activeModel = candidate.model
-                            send(
-                                StreamEvent.ProviderChanged(
-                                    config = config.copy(model = candidate.model, baseUrl = candidate.baseUrl),
-                                    reason = if (needsVision && !visionCapable(config.model)) {
-                                        "Smart routing: switched to ${candidate.model} for image support"
-                                    } else {
-                                        "Auto-fallback: switched to ${candidate.model}"
-                                    },
-                                    persistSelection = false,
-                                )
-                            )
-                        }
-
                         candidate.streamFactory()
                             .timeout(FIRST_OUTPUT_TIMEOUT_MS.toDouble().milliseconds)
                             .collect { event ->
@@ -442,27 +449,50 @@ object HarnessProvider {
                                         throw RuntimeException("__UPSTREAM_FAILURE__")
                                     }
                                     is StreamEvent.TextDelta -> {
-                                        if (event.text.isNotEmpty()) visibleOutputEmitted = true
-                                        send(event)
+                                        if (!committedOutput) {
+                                            pendingDraftEvents += event
+                                            val textLen = pendingDraftEvents.sumOf { (it as? StreamEvent.TextDelta)?.text?.length ?: 0 }
+                                            if (textLen >= 20) {
+                                                committedOutput = true
+                                                for (d in pendingDraftEvents) send(d)
+                                                pendingDraftEvents.clear()
+                                            }
+                                        } else {
+                                            send(event)
+                                        }
                                     }
                                     is StreamEvent.ToolCallDelta,
                                     is StreamEvent.ToolCallReady,
-                                    is StreamEvent.ToolCallBatch -> {
-                                        visibleOutputEmitted = true
+                                    is StreamEvent.ToolCallBatch,
+                                    is StreamEvent.Done -> {
+                                        if (!committedOutput) {
+                                            committedOutput = true
+                                            for (d in pendingDraftEvents) send(d)
+                                            pendingDraftEvents.clear()
+                                        }
                                         send(event)
                                     }
                                     else -> {
-                                        send(event)
+                                        if (committedOutput) {
+                                            send(event)
+                                        } else {
+                                            pendingDraftEvents += event
+                                        }
                                     }
                                 }
                             }
                         if (candidateFailed == null) {
+                            if (!committedOutput) {
+                                committedOutput = true
+                                for (d in pendingDraftEvents) send(d)
+                                pendingDraftEvents.clear()
+                            }
                             markUpstreamHealthy(candidate.key)
                             return@channelFlow
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         if (e !is TimeoutCancellationException) throw e
-                        // Timed out waiting for first visible response
+                        pendingDraftEvents.clear()
                         markUpstreamCooldown(candidate.key)
                         lastFailure = StreamEvent.Failure(
                             message = "Upstream ${candidate.model} timed out after ${FIRST_OUTPUT_TIMEOUT_MS / 1000}s",
@@ -470,6 +500,7 @@ object HarnessProvider {
                             retryable = true,
                         )
                     } catch (e: Throwable) {
+                        pendingDraftEvents.clear()
                         val failure = candidateFailed ?: when (e) {
                             is ApiException -> HarnessFreeLimit.normalize(
                                 StreamEvent.Failure(
@@ -487,9 +518,7 @@ object HarnessProvider {
                         lastFailure = failure
                         markUpstreamCooldown(candidate.key)
                     }
-
-                    // If visible text or tool calls were already streamed to the UI, we cannot replay from scratch
-                    if (visibleOutputEmitted || index == orderedCandidates.lastIndex) {
+                    if (committedOutput || index == orderedCandidates.lastIndex) {
                         send(lastFailure ?: StreamEvent.Failure("All Harness gateways failed"))
                         return@channelFlow
                     }

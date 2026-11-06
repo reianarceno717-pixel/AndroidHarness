@@ -419,140 +419,207 @@ class LaptopConnectionActivity : AppCompatActivity() {
             out.flush()
         }
 
-        private const val LAPTOP_WEB_HTML = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>AndroidHarness · Laptop Web Studio</title>
-<style>
+        private const val LAPTOP_WEB_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" /><title>AndroidHarness · Virtual Phone & Laptop Studio</title><style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #0B1120; color: #F8FAFC; display: flex; flex-direction: column; height: 100vh; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; background: #0F172A; border-bottom: 1px solid #1E293B; }
-  .brand { font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; background: #0F172A; border-bottom: 1px solid #1E293B; }
+  .brand { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: #10B981; display: inline-block; }
-  .meta { font-family: monospace; font-size: 12px; color: #94A3B8; }
-  main { flex: 1; display: grid; grid-template-columns: 280px 1fr 420px; min-height: 0; }
+  .meta { font-family: monospace; font-size: 11px; color: #94A3B8; }
+  .mobile-tabs { display: none; background: #0F172A; border-bottom: 1px solid #1E293B; }
+  .tab-btn { flex: 1; padding: 10px 4px; font-size: 12px; background: transparent; color: #94A3B8; border: none; border-bottom: 2px solid transparent; cursor: pointer; text-align: center; font-weight: 500; }
+  .tab-btn.active { color: #38BDF8; border-bottom-color: #38BDF8; font-weight: 700; }
+  main { flex: 1; display: grid; grid-template-columns: 260px 1fr 400px; min-height: 0; }
   .panel { border-right: 1px solid #1E293B; display: flex; flex-direction: column; min-height: 0; }
-  .panel-header { padding: 10px 14px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94A3B8; border-bottom: 1px solid #1E293B; display: flex; justify-content: space-between; align-items: center; }
+  .panel-header { padding: 9px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94A3B8; border-bottom: 1px solid #1E293B; display: flex; justify-content: space-between; align-items: center; }
   .file-list { flex: 1; overflow-y: auto; padding: 8px; }
   .file-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; font-family: monospace; font-size: 13px; color: #CBD5E1; }
   .file-item:hover, .file-item.active { background: #1E293B; color: #38BDF8; }
   .editor-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-  textarea#editor { flex: 1; width: 100%; background: #0B1120; color: #E2E8F0; border: none; padding: 16px; font-family: monospace; font-size: 13px; line-height: 1.5; resize: none; outline: none; }
-  .chat-messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
-  .msg { padding: 12px 14px; border-radius: 8px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
-  .msg.user { background: #1E293B; align-self: flex-end; max-width: 90%; }
+  textarea#editor { flex: 1; width: 100%; background: #0B1120; color: #E2E8F0; border: none; padding: 14px; font-family: monospace; font-size: 13px; line-height: 1.5; resize: none; outline: none; }
+  .chat-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+  .msg.user { background: #1E293B; align-self: flex-end; max-width: 88%; }
   .msg.ai { background: #0F172A; border: 1px solid #1E293B; align-self: flex-start; width: 100%; }
-  .chat-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #1E293B; background: #0F172A; }
+  .chat-input { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #1E293B; background: #0F172A; align-items: center; }
   input, button { font-family: inherit; font-size: 13px; border-radius: 6px; }
   input { flex: 1; background: #1E293B; color: #F8FAFC; border: 1px solid #334155; padding: 9px 12px; outline: none; }
-  button { background: #2563EB; color: #FFF; border: none; padding: 8px 14px; font-weight: 600; cursor: pointer; }
+  button { background: #2563EB; color: #FFF; border: none; padding: 8px 12px; font-weight: 600; cursor: pointer; }
   button:hover { background: #1D4ED8; }
-</style>
-</head>
-<body>
+  .btn-secondary { background: #334155; }
+  .btn-secondary:hover { background: #475569; }
+  @media (max-width: 768px) {
+    header { padding: 8px 12px; }
+    .meta { display: none; }
+    .mobile-tabs { display: flex; }
+    main { display: flex; flex-direction: column; }
+    .panel { display: none; border-right: none; }
+    .panel.tab-active { display: flex; flex: 1; }
+  }
+</style></head><body>
 <header>
-  <div class="brand"><span class="dot"></span> AndroidHarness Laptop Studio</div>
-  <div class="meta" id="status-meta">Connected to phone · Multi-Gateway Smart Routing Active</div>
+  <div class="brand"><span class="dot"></span> AndroidHarness Virtual Studio</div>
+  <div class="meta" id="status-meta">Multi-Gateway AI Active · Zero-Install Second Phone Access</div>
 </header>
+<nav class="mobile-tabs" id="mobile-tabs">
+  <button class="tab-btn active" id="btn-tab-chat" onclick="switchMobileTab('chat')">💬 Chat &amp; Voice</button>
+  <button class="tab-btn" id="btn-tab-files" onclick="switchMobileTab('files')">📁 Files</button>
+  <button class="tab-btn" id="btn-tab-editor" onclick="switchMobileTab('editor')">📝 Editor</button>
+</nav>
 <main>
-  <section class="panel">
+  <section class="panel" id="panel-files">
     <div class="panel-header"><span>Phone Workspace</span><button onclick="createNewFile()">+ File</button></div>
     <div class="file-list" id="file-list"></div>
   </section>
-  <section class="panel editor-wrap">
-    <div class="panel-header"><span id="current-file">Select or create a workspace file</span><button onclick="saveCurrentFile()">Save to Phone</button></div>
-    <textarea id="editor" placeholder="Select a file on the left or ask the AI assistant on the right to generate code..."></textarea>
+  <section class="panel editor-wrap" id="panel-editor">
+    <div class="panel-header"><span id="current-file">Select or create file</span><button onclick="saveCurrentFile()">Save</button></div>
+    <textarea id="editor" placeholder="Select a workspace file or ask the AI to code..."></textarea>
   </section>
-  <section class="panel" style="border-right:none">
-    <div class="panel-header"><span>Live Phone AI Agent</span><span id="model-tag">kilo-auto/free</span></div>
+  <section class="panel tab-active" id="panel-chat" style="border-right:none">
+    <div class="panel-header">
+      <span>AI Specialist Team</span>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn-secondary" id="read-btn" style="padding:4px 8px;font-size:11px" onclick="toggleAutoSpeech()">🔊 Auto Read: ON</button>
+        <span id="model-tag" style="color:#38BDF8;font-size:11px">Multi-Model</span>
+      </div>
+    </div>
     <div class="chat-messages" id="chat-box">
-      <div class="msg ai">Connected directly to your Android phone. Send any coding task or question below!</div>
+      <div class="msg ai">Connected virtually to AndroidHarness! You can speak or chat with the AI model team and edit phone workspace files right from this browser without installing anything.</div>
     </div>
     <div class="chat-input">
-      <input id="prompt-input" placeholder="Ask your phone AI to build or edit..." onkeydown="if(event.key==='Enter')sendPrompt()" />
+      <button class="btn-secondary" id="voice-btn" style="padding:8px 10px" onclick="toggleVoice()" title="Speak with microphone">🎙️</button>
+      <input id="prompt-input" placeholder="Ask AI team or edit workspace..." onkeydown="if(event.key==='Enter')sendPrompt()" />
       <button onclick="sendPrompt()">Send</button>
     </div>
   </section>
 </main>
 <script>
-let activeFilePath = '';
+let activeFilePath = "";
+let autoVoiceRead = true;
+let isRecognizing = false;
+
+function switchMobileTab(tab) {
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".panel").forEach(p => p.classList.remove("tab-active"));
+  document.getElementById("btn-tab-" + tab).classList.add("active");
+  document.getElementById("panel-" + tab).classList.add("tab-active");
+}
+
+function toggleAutoSpeech() {
+  autoVoiceRead = !autoVoiceRead;
+  document.getElementById("read-btn").textContent = autoVoiceRead ? "🔊 Auto Read: ON" : "🔇 Auto Read: OFF";
+  if (!autoVoiceRead && window.speechSynthesis) window.speechSynthesis.cancel();
+}
+
+function toggleVoice() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    alert("Speech recognition not supported in this browser. Please type your message.");
+    return;
+  }
+  const vbtn = document.getElementById("voice-btn");
+  if (isRecognizing) return;
+  const rec = new SpeechRecognition();
+  rec.lang = "en-US";
+  vbtn.textContent = "🔴";
+  isRecognizing = true;
+  rec.onresult = (e) => {
+    const transcript = e.results[0][0].transcript;
+    document.getElementById("prompt-input").value = transcript;
+    vbtn.textContent = "🎙️";
+    isRecognizing = false;
+    sendPrompt();
+  };
+  rec.onerror = () => { vbtn.textContent = "🎙️"; isRecognizing = false; };
+  rec.onend = () => { vbtn.textContent = "🎙️"; isRecognizing = false; };
+  rec.start();
+}
+
 async function loadFiles() {
-  const res = await fetch('/api/files');
+  const res = await fetch("/api/files");
   const data = await res.json();
-  const list = document.getElementById('file-list');
-  list.innerHTML = '';
+  const list = document.getElementById("file-list");
+  list.innerHTML = "";
   if (!data.files || data.files.length === 0) {
-    list.innerHTML = '<div style="padding:10px;color:#64748B;font-size:12px">No files yet. Click + File to create one.</div>';
+    list.innerHTML = "<div style='padding:10px;color:#64748B;font-size:12px'>No files yet. Click + File to create one.</div>";
     return;
   }
   data.files.forEach(f => {
-    const div = document.createElement('div');
-    div.className = 'file-item' + (f.path === activeFilePath ? ' active' : '');
-    div.textContent = f.path + ' (' + f.size + 'B)';
-    div.onclick = () => openFile(f.path);
+    const div = document.createElement("div");
+    div.className = "file-item" + (f.path === activeFilePath ? " active" : "");
+    div.textContent = f.path + " (" + f.size + "B)";
+    div.onclick = () => { openFile(f.path); if (window.innerWidth <= 768) switchMobileTab("editor"); };
     list.appendChild(div);
   });
 }
+
 async function openFile(path) {
   activeFilePath = path;
-  document.getElementById('current-file').textContent = path;
-  const res = await fetch('/api/file?path=' + encodeURIComponent(path));
+  document.getElementById("current-file").textContent = path;
+  const res = await fetch("/api/file?path=" + encodeURIComponent(path));
   const data = await res.json();
-  document.getElementById('editor').value = data.content || '';
+  document.getElementById("editor").value = data.content || "";
   loadFiles();
 }
+
 async function createNewFile() {
-  const name = prompt('Enter file name (e.g. index.html):', 'index.html');
+  const name = prompt("Enter file name (e.g. index.html):", "index.html");
   if (!name) return;
   activeFilePath = name;
-  document.getElementById('current-file').textContent = name;
-  document.getElementById('editor').value = '<!doctype html>\\n<html>\\n<body>\\n  <h1>Hello from AndroidHarness</h1>\\n</body>\\n</html>';
+  document.getElementById("current-file").textContent = name;
+  document.getElementById("editor").value = "<!doctype html>\n<html>\n<body>\n  <h1>Hello from AndroidHarness</h1>\n</body>\n</html>";
   await saveCurrentFile();
+  if (window.innerWidth <= 768) switchMobileTab("editor");
 }
+
 async function saveCurrentFile() {
-  if (!activeFilePath) { activeFilePath = 'index.html'; document.getElementById('current-file').textContent = activeFilePath; }
-  await fetch('/api/file', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ path: activeFilePath, content: document.getElementById('editor').value })
+  if (!activeFilePath) { activeFilePath = "index.html"; document.getElementById("current-file").textContent = activeFilePath; }
+  await fetch("/api/file", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ path: activeFilePath, content: document.getElementById("editor").value })
   });
   loadFiles();
 }
+
 async function sendPrompt() {
-  const input = document.getElementById('prompt-input');
+  const input = document.getElementById("prompt-input");
   const text = input.value.trim();
   if (!text) return;
-  input.value = '';
-  const box = document.getElementById('chat-box');
-  const u = document.createElement('div');
-  u.className = 'msg user';
+  input.value = "";
+  const box = document.getElementById("chat-box");
+  const u = document.createElement("div");
+  u.className = "msg user";
   u.textContent = text;
   box.appendChild(u);
-  const a = document.createElement('div');
-  a.className = 'msg ai';
-  a.textContent = 'Working on it...';
+  const a = document.createElement("div");
+  a.className = "msg ai";
+  a.textContent = "AI Team working...";
   box.appendChild(a);
   box.scrollTop = box.scrollHeight;
   try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ prompt: text })
     });
     const data = await res.json();
-    document.getElementById('model-tag').textContent = data.model || 'kilo-auto/free';
-    a.textContent = data.reply || 'Done.';
+    document.getElementById("model-tag").textContent = data.model || "kilo-auto/free";
+    const replyText = data.reply || "Done.";
+    a.textContent = replyText;
+    if (autoVoiceRead && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+      const cleanSpeech = replyText.replace(/[*#`_]/g, "").slice(0, 450);
+      const utter = new SpeechSynthesisUtterance(cleanSpeech);
+      window.speechSynthesis.speak(utter);
+    }
   } catch (e) {
-    a.textContent = 'Error communicating with phone: ' + e.message;
+    a.textContent = "Error communicating with phone: " + e.message;
   }
   box.scrollTop = box.scrollHeight;
 }
 loadFiles();
-</script>
-</body>
-</html>"""
+</script></body></html>"""
     }
 }

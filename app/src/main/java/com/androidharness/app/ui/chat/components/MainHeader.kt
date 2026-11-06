@@ -32,6 +32,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Archive
@@ -133,6 +135,8 @@ internal fun MainHeader(
     chatArchived: Boolean = false,
     onToggleChatPin: (() -> Unit)? = null,
     onToggleChatArchive: (() -> Unit)? = null,
+    ttsAlwaysSpeak: Boolean = false,
+    onToggleTtsAlwaysSpeak: (() -> Unit)? = null,
 ) {
     val uiContext = androidx.compose.ui.platform.LocalContext.current
     var menu by remember { mutableStateOf(false) }
@@ -152,7 +156,8 @@ internal fun MainHeader(
             workspaceName = workspaceName, onOpenDrawer = onOpenDrawer,
             searchDepth = searchDepth, onSetSearchDepth = onSetSearchDepth, onFind = onFind,
             onOpenChatSettings = onOpenChatSettings, onOpenSources = onOpenSources,
-            chatPinned = chatPinned, chatArchived = chatArchived, onToggleChatPin = onToggleChatPin, onToggleChatArchive = onToggleChatArchive)
+            chatPinned = chatPinned, chatArchived = chatArchived, onToggleChatPin = onToggleChatPin, onToggleChatArchive = onToggleChatArchive,
+            ttsAlwaysSpeak = ttsAlwaysSpeak, onToggleTtsAlwaysSpeak = onToggleTtsAlwaysSpeak)
         }
         return
     }
@@ -202,6 +207,16 @@ internal fun MainHeader(
                         if (glass) Spacer(Modifier.width(4.dp))
                         SearchDepthControl(searchDepth, onSetSearchDepth)
                         Spacer(Modifier.width(2.dp))
+                    }
+                    if (onToggleTtsAlwaysSpeak != null) {
+                        ExpressiveIconButton(glassChrome = true, onClick = onToggleTtsAlwaysSpeak) {
+                            Icon(
+                                if (ttsAlwaysSpeak) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                                contentDescription = if (ttsAlwaysSpeak) "Auto-voice reading enabled (tap to mute)" else "Auto-voice reading muted (tap to enable)",
+                                modifier = Modifier.size(18.dp),
+                                tint = if (ttsAlwaysSpeak) scheme.primary else scheme.onSurfaceVariant.copy(alpha = 0.55f),
+                            )
+                        }
                     }
                     Box {
                         ExpressiveIconButton(glassChrome = true, onClick = { menu = true }) {
@@ -409,6 +424,8 @@ private fun DesktopConversationHeader(
     chatArchived: Boolean = false,
     onToggleChatPin: (() -> Unit)? = null,
     onToggleChatArchive: (() -> Unit)? = null,
+    ttsAlwaysSpeak: Boolean = false,
+    onToggleTtsAlwaysSpeak: (() -> Unit)? = null,
 ) {
     val uiContext = androidx.compose.ui.platform.LocalContext.current
     val scheme = MaterialTheme.colorScheme
@@ -442,6 +459,16 @@ private fun DesktopConversationHeader(
             if (chatOnly) {
                 Spacer(Modifier.width(6.dp))
                 SearchDepthControl(searchDepth, onSetSearchDepth)
+            }
+            if (onToggleTtsAlwaysSpeak != null) {
+                ExpressiveIconButton(glassChrome = true, onClick = onToggleTtsAlwaysSpeak, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        if (ttsAlwaysSpeak) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                        contentDescription = if (ttsAlwaysSpeak) "Auto-voice reading enabled" else "Auto-voice reading muted",
+                        modifier = Modifier.size(18.dp),
+                        tint = if (ttsAlwaysSpeak) scheme.primary else scheme.onSurfaceVariant.copy(alpha = 0.55f),
+                    )
+                }
             }
             Box {
                 ExpressiveIconButton(glassChrome = true, onClick = { menu = true }, modifier = Modifier.size(36.dp)) {

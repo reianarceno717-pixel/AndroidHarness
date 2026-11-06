@@ -755,10 +755,8 @@ class AgentEngine(
                     !localChat &&
                     !conversation.isChat &&
                     mode == AgentMode.ACT &&
-                    calls.isNotEmpty() &&
-                    calls.count { it.name == "task" } < 2 &&
                     roundRegistry.get("task") != null &&
-                    working.none { m -> m.toolCalls.count { it.name == "task" } >= 2 }
+                    calls.none { it.id.startsWith("team-") }
                 ) {
                     val userTask = working.lastOrNull {
                         it.role == Role.USER && !it.text.startsWith("Resume the interrupted task")
@@ -778,7 +776,12 @@ class AgentEngine(
                         calls += ToolCallData(
                             id = "team-ui-$shortTurn",
                             name = "task",
-                            argumentsJson = """{"name":"UI & 3D Specialist","model":"nvidia/nemotron-3.5-super-vl:free","prompt":"Design the UI layout, 3D animations, and interactive components for: $cleanTask"}""",
+                            argumentsJson = """{"name":"UI, 3D & Graphics Specialist","model":"nvidia/nemotron-3.5-super-vl:free","prompt":"Design the UI layout, 3D animations, and interactive components for: $cleanTask"}""",
+                        )
+                        calls += ToolCallData(
+                            id = "team-qa-$shortTurn",
+                            name = "task",
+                            argumentsJson = """{"name":"Testing & Logic Specialist","model":"nvidia/nemotron-3.5-lightning:free","prompt":"Analyze edge cases, error recovery, logic invariants, and test coverage for: $cleanTask"}""",
                         )
                     }
                 }
@@ -1780,25 +1783,27 @@ class AgentEngine(
             val specialistPrompt = "You are ${title ?: "Specialist"} in a collaborative multi-model AI engineering team. " +
                 "Provide a concise, high-impact 4-bullet implementation blueprint with concrete file names and component details so the lead agent can build immediately."
             try {
-                provider.streamChat(
-                    config = config,
-                    apiKey = apiKey,
-                    systemPrompt = specialistPrompt,
-                    messages = listOf(
-                        ChatMessage(
-                            role = Role.USER,
-                            text = "Workspace files: ${rootFiles.ifBlank { "(empty)" }}\nTask: $prompt",
-                        )
-                    ),
-                    tools = emptyList(),
-                    options = requestOptions.copy(
-                        maxOutputTokens = 450,
-                        thinking = ThinkingLevel.OFF,
-                    ),
-                ).collect { ev ->
-                    if (ev is StreamEvent.TextDelta && ev.text.isNotEmpty()) {
-                        specialistText.append(ev.text)
-                        emitEvent(AgentEvent.SubagentPreview(parentCallId, specialistText.toString().takeLast(260)))
+                kotlinx.coroutines.withTimeout(5_000L) {
+                    provider.streamChat(
+                        config = config,
+                        apiKey = apiKey,
+                        systemPrompt = specialistPrompt,
+                        messages = listOf(
+                            ChatMessage(
+                                role = Role.USER,
+                                text = "Workspace files: ${rootFiles.ifBlank { "(empty)" }}\nTask: $prompt",
+                            )
+                        ),
+                        tools = emptyList(),
+                        options = requestOptions.copy(
+                            maxOutputTokens = 450,
+                            thinking = ThinkingLevel.OFF,
+                        ),
+                    ).collect { ev ->
+                        if (ev is StreamEvent.TextDelta && ev.text.isNotEmpty()) {
+                            specialistText.append(ev.text)
+                            emitEvent(AgentEvent.SubagentPreview(parentCallId, specialistText.toString().takeLast(260)))
+                        }
                     }
                 }
             } catch (ce: CancellationException) {

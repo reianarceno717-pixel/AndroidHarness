@@ -1468,6 +1468,16 @@ private fun ChatScreenContent(
                     findOpen = true
                     pinnedToBottom = false
                 },
+                ttsAlwaysSpeak = appSettings.ttsAlwaysSpeak,
+                onToggleTtsAlwaysSpeak = {
+                    scope.launch {
+                        val next = !appSettings.ttsAlwaysSpeak
+                        viewModel.container.settings.setTtsAlwaysSpeak(next)
+                        if (!next) {
+                            viewModel.container.tts.stop()
+                        }
+                    }
+                },
             )
             if (showChatStartControls) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.Center,
