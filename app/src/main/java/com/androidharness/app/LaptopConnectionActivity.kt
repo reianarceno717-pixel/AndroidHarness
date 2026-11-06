@@ -552,7 +552,11 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         }
                     }
                     else -> {
-                        writeHttpResponse(sock, 200, "text/html; charset=utf-8", LAPTOP_WEB_HTML)
+                        if (path.startsWith("/api/")) {
+                            writeHttpResponse(sock, 404, "application/json; charset=utf-8", """{"error":"API endpoint not found"}""")
+                        } else {
+                            writeHttpResponse(sock, 200, "text/html; charset=utf-8", LAPTOP_WEB_HTML)
+                        }
                     }
                 }
             }
@@ -566,6 +570,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 401 -> "Unauthorized"
                 404 -> "Not Found"
                 405 -> "Method Not Allowed"
+                409 -> "Conflict"
                 413 -> "Payload Too Large"
                 502 -> "Bad Gateway"
                 else -> "Error"
