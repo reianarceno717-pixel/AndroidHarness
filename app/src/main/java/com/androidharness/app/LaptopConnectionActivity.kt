@@ -289,8 +289,16 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 try {
                                     executor.execute { handleClient(client, workspaceDir) }
                                 } catch (_: RejectedExecutionException) {
-                                    // Close immediately when the bounded worker queue is full.
-                                    runCatching { client.close() }
+                                    // Tell the caller to retry instead of silently dropping a busy-bridge connection.
+                                    runCatching {
+                                        writeHttpResponse(
+                                            client,
+                                            503,
+                                            "application/json; charset=utf-8",
+                                            """{"error":"AndroidHarness bridge is busy; retry shortly"}""",
+                                        )
+                                        client.close()
+                                    }
                                 }
                             } catch (_: Exception) {
                                 if (socket.isClosed) break
@@ -616,6 +624,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 409 -> "Conflict"
                 413 -> "Payload Too Large"
                 502 -> "Bad Gateway"
+                503 -> "Service Unavailable"
                 else -> "Error"
             }
             val headers = "HTTP/1.1 $status $statusText\r\n" +
