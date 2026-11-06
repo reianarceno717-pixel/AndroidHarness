@@ -355,7 +355,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             ?.let { URLDecoder.decode(it, "UTF-8") }
                             .orEmpty()
                         val target = File(workspaceDir, relPath).canonicalFile
-                        if (!target.path.startsWith(workspaceDir.canonicalPath) || !target.isFile) {
+                        if (!target.path.startsWith(workspaceDir.canonicalPath + File.separator) || !target.isFile) {
                             writeHttpResponse(sock, 404, "application/json; charset=utf-8", """{"error":"File not found"}""")
                         } else {
                             val json = JSONObject()
@@ -369,7 +369,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         val relPath = payload.optString("path").trim().removePrefix("/")
                         val content = payload.optString("content")
                         val target = File(workspaceDir, relPath).canonicalFile
-                        if (relPath.isEmpty() || !target.path.startsWith(workspaceDir.canonicalPath)) {
+                        if (relPath.isEmpty() || !target.path.startsWith(workspaceDir.canonicalPath + File.separator)) {
                             writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Invalid path"}""")
                         } else {
                             target.parentFile?.mkdirs()
