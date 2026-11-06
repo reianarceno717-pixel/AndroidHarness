@@ -416,6 +416,10 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Empty prompt"}""")
                             return
                         }
+                        if (prompt.length > 32_000) {
+                            writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"Prompt exceeds the 32,000 character limit"}""")
+                            return
+                        }
                         val replyPayload = synchronized(chatHistoryLock) {
                             val historyFile = File(workspaceDir, ".androidharness-chat-history.json")
                             val history = runCatching {
