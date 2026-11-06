@@ -21,6 +21,7 @@ import java.io.IOException
 import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 object GroqWhisperClient {
 
@@ -121,9 +122,11 @@ object GroqWhisperClient {
     /** Keep cancellation attached until the response body has also finished reading. */
     private suspend fun executeText(client: OkHttpClient, request: Request): TextResponse = suspendCancellableCoroutine { continuation ->
         val call = client.newCall(request)
-        var response: Response? = null
+        val responseRef = AtomicReference<Response?>(null)
 
         continuation.invokeOnCancellation {
+            val response = responseRef.get()
+            response?.body?.close()
             response?.close()
             call.cancel()
         }
@@ -133,10 +136,16 @@ object GroqWhisperClient {
                 if (continuation.isActive) continuation.resumeWithException(error)
             }
 
-            override fun onResponse(call: Call, responseValue: Response) {
-                response = responseValue
+            override fun onResponse(call: Call, response: Response) {
+                responseRef.set(response)
+                if (!continuation.isActive) {
+                    response.body?.close()
+                    response.close()
+                    return
+                }
+
                 try {
-                    val result = responseValue.use {
+                    val result = response.use {
                         TextResponse(it.code, it.body?.string().orEmpty())
                     }
                     if (continuation.isActive) continuation.resume(result)
