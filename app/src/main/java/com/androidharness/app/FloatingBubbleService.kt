@@ -25,6 +25,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ImageView
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -107,17 +108,18 @@ class FloatingBubbleService : Service() {
             y = 200
         }
 
-        val bubble = TextView(this).apply {
-            text = "⚡"
-            textSize = 24f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+        val bubble = ImageView(this).apply {
+            setImageResource(R.mipmap.ic_launcher)
+            scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+            setPadding((8 * resources.displayMetrics.density).toInt(), (8 * resources.displayMetrics.density).toInt(),
+                (8 * resources.displayMetrics.density).toInt(), (8 * resources.displayMetrics.density).toInt())
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.parseColor("#0F172A"))
                 setStroke((2 * resources.displayMetrics.density).toInt(), Color.parseColor("#38BDF8"))
             }
             elevation = 16f
+            contentDescription = "AndroidHarness assistant"
         }
 
         var initialX = 0
