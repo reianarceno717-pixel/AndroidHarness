@@ -262,11 +262,20 @@ class LaptopConnectionActivity : AppCompatActivity() {
         private const val REMOTE_SESSION_KEY = "shared_chat_session_id"
 
         /**
-         * The remote browser is a client of the native chat engine, not a separate
-         * provider-backed chatbot. Keep one app-managed CHAT session for all bridge clients.
+         * Resolve the browser to the same session currently active in the native app.
+         * The bridge's private CHAT session is only a fallback when the app has no
+         * valid last-active session (for example, on a fresh installation).
+         *
+         * Resolve this on every request rather than caching it: opening another chat
+         * in the Android UI must switch the remote browser to that same conversation.
          */
         private suspend fun getOrCreateRemoteSession(app: HarnessApp): String {
             val container = app.container
+            val lastActiveId = container.settings.settings.first().lastActiveSessionId
+            if (!lastActiveId.isNullOrBlank() && container.sessions.session(lastActiveId) != null) {
+                return lastActiveId
+            }
+
             val prefs = app.getSharedPreferences(REMOTE_SESSION_PREFS, Context.MODE_PRIVATE)
             val existing = prefs.getString(REMOTE_SESSION_KEY, null)
             if (!existing.isNullOrBlank() && container.sessions.session(existing) != null) {
