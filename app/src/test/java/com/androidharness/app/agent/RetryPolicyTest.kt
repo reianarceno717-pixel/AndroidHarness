@@ -82,4 +82,18 @@ class RetryPolicyTest {
         assertTrue(d3 in 2800..5200)
         assertEquals(3, RetryPolicy.MAX_RETRIES)
     }
+
+    @Test
+    fun `explicit http status categories match phase 1 specification`() {
+        assertEquals(RetryPolicy.HttpErrorCategory.INVALID_OR_MISSING_KEY, RetryPolicy.classifyHttpCode(401))
+        assertEquals(RetryPolicy.HttpErrorCategory.PAYMENT_OR_CREDITS_EXHAUSTED, RetryPolicy.classifyHttpCode(402))
+        assertEquals(RetryPolicy.HttpErrorCategory.ACCESS_DENIED, RetryPolicy.classifyHttpCode(403))
+        assertEquals(RetryPolicy.HttpErrorCategory.MODEL_OR_ENDPOINT_UNAVAILABLE, RetryPolicy.classifyHttpCode(404))
+        assertEquals(RetryPolicy.HttpErrorCategory.REQUEST_TIMEOUT, RetryPolicy.classifyHttpCode(408))
+        assertEquals(RetryPolicy.HttpErrorCategory.RATE_LIMIT_OR_QUOTA, RetryPolicy.classifyHttpCode(429))
+        assertEquals(RetryPolicy.HttpErrorCategory.PROVIDER_SERVER_ERROR, RetryPolicy.classifyHttpCode(502))
+        assertTrue(RetryPolicy.isTerminalAuthOrRequestCode(401))
+        assertTrue(RetryPolicy.isTerminalAuthOrRequestCode(403))
+        assertFalse(RetryPolicy.isTerminalAuthOrRequestCode(429))
+    }
 }

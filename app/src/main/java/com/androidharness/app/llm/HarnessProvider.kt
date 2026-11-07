@@ -316,6 +316,22 @@ object HarnessProvider {
         return provider.streamChat(routed, key ?: KEYLESS, systemPrompt, messages, tools, routedOptions)
     }
 
+    // Fallback exists to keep the assistant usable when one provider genuinely fails — it is NOT a mechanism to hide errors.
+    private const val MAX_CANDIDATE_TRANSIENT_RETRIES = 1
+    private const val CANDIDATE_RETRY_DELAY_MS = 350L
+
+    private fun isCandidateTransientFailure(failure: StreamEvent.Failure): Boolean {
+        if (HarnessFreeLimit.isConfirmedQuotaExhaustion(failure)) return false
+        if (failure.retryable == false) return false
+        val code = failure.code
+        if (code != null) {
+            if (code == 400 || code == 401 || code == 402 || code == 403 || code == 404 || code == 422) return false
+            if (code == 408 || code == 429 || code in 500..599) return true
+        }
+        return failure.errorCode == HarnessFreeLimit.RATE_CODE ||
+            com.androidharness.app.agent.RetryPolicy.isRetryable(null, failure.message, failure.code)
+    }
+
     fun create(pooledClient: OkHttpClient = poolClient): LlmProvider = object : LlmProvider {
         override fun streamChat(
             config: ProviderConfig,
@@ -333,6 +349,7 @@ object HarnessProvider {
             if (!isPooled(config.model) && config.model !in customModelIds) {
                 return flowOf(StreamEvent.Failure(
                     "${config.model} is no longer available in Harness. Refresh the model list and choose an available model.",
+                    retryable = false,
                 ))
             }
 
@@ -347,7 +364,7 @@ object HarnessProvider {
 
             val rawCandidates = mutableListOf<UpstreamCandidate>()
 
-            // 1. Primary requested/vision-upgraded model
+            // 1. Primary requested/vision-upgraded model (must be pooled or verified custom model)
             val primaryConfig = config.copy(model = effectivePrimaryModel)
             val primaryBaseUrl = pool[effectivePrimaryModel]?.baseUrl ?: BASE_URL
             rawCandidates += UpstreamCandidate(
@@ -359,44 +376,21 @@ object HarnessProvider {
                 },
             )
 
-            // 1b. Fast pool priority for sub-second responses and instant failover
-            val fastPoolModels = listOf(
-                "cohere/north-mini-code:free",
-                "nvidia/nemotron-3.5-super-vl:free",
-                "nvidia/nemotron-3.5-lightning:free",
-            )
-            for (fm in fastPoolModels) {
-                if (needsVision && !visionCapable(fm)) continue
-                val key = "$KILO_BASE_URL#$fm"
-                if (rawCandidates.none { it.key == key }) {
-                    val altConfig = config.copy(model = fm)
-                    rawCandidates += UpstreamCandidate(
-                        key = key,
-                        model = fm,
-                        baseUrl = KILO_BASE_URL,
-                        streamFactory = {
-                            singleUpstreamStream(pooledClient, altConfig, apiKey, systemPrompt, messages, tools, options)
-                        },
-                    )
-                }
-            }
-
-            // 2. OpenCode Zen gateway fallback for instant quota/stall recovery
-            val zenModel = if (effectivePrimaryModel == pollinations.id) DEFAULT_MODEL else effectivePrimaryModel
-            if (primaryBaseUrl != BASE_URL) {
+            // 2. OpenCode Zen gateway fallback ONLY for verified custom Zen models (never send Kilo-only IDs to Zen)
+            if (effectivePrimaryModel in customModelIds && primaryBaseUrl != BASE_URL) {
                 rawCandidates += UpstreamCandidate(
-                    key = "$BASE_URL#$zenModel",
-                    model = zenModel,
+                    key = "$BASE_URL#$effectivePrimaryModel",
+                    model = effectivePrimaryModel,
                     baseUrl = BASE_URL,
                     streamFactory = {
-                        zenStream(config, zenModel, apiKey, systemPrompt, messages, tools, options)
+                        zenStream(config, effectivePrimaryModel, apiKey, systemPrompt, messages, tools, options)
                     },
                 )
             }
 
-            // 3. Additional pooled free models on Kilo Gateway
+            // 3. Additional verified pooled free models on Kilo Gateway (only models actually present in pool)
             for (entry in pooledModels) {
-                if (entry.id == pollinations.id) continue
+                if (entry.id == pollinations.id || !isPooled(entry.id)) continue
                 if (needsVision && !visionCapable(entry.id)) continue
                 val key = "$KILO_BASE_URL#${entry.id}"
                 if (rawCandidates.none { it.key == key }) {
@@ -412,8 +406,8 @@ object HarnessProvider {
                 }
             }
 
-            // 4. Pollinations fast text/code fallback (when no images are attached)
-            if (!needsVision) {
+            // 4. Pollinations fast text/code fallback (when no images are attached and present in pool)
+            if (!needsVision && isPooled(pollinations.id)) {
                 val pollKey = "$POLLINATIONS_BASE_URL#${pollinations.id}"
                 if (rawCandidates.none { it.key == pollKey }) {
                     val pollConfig = config.copy(model = pollinations.id)
@@ -428,97 +422,143 @@ object HarnessProvider {
                 }
             }
 
-            // Prioritize healthy upstreams while keeping cooled-down ones as last-resort fallbacks
-            val orderedCandidates = rawCandidates.sortedBy { if (isUpstreamHealthy(it.key)) 0 else 1 }
+            // Keep primary first if healthy; only reorder if primary is on cooldown and a fallback is healthy
+            val orderedCandidates = if (rawCandidates.isNotEmpty() && isUpstreamHealthy(rawCandidates.first().key)) {
+                listOf(rawCandidates.first()) + rawCandidates.drop(1).sortedBy { if (isUpstreamHealthy(it.key)) 0 else 1 }
+            } else {
+                rawCandidates.sortedBy { if (isUpstreamHealthy(it.key)) 0 else 1 }
+            }
 
             return channelFlow {
                 var activeModel = config.model
                 var lastFailure: StreamEvent.Failure? = null
 
                 for ((index, candidate) in orderedCandidates.withIndex()) {
-                    var committedOutput = false
-                    val pendingDraftEvents = mutableListOf<StreamEvent>()
-                    var candidateFailed: StreamEvent.Failure? = null
-                    try {
-                        candidate.streamFactory()
-                            .timeout(FIRST_OUTPUT_TIMEOUT_MS.toDouble().milliseconds)
-                            .collect { event ->
-                                when (event) {
-                                    is StreamEvent.Failure -> {
-                                        candidateFailed = event
-                                        throw RuntimeException("__UPSTREAM_FAILURE__")
-                                    }
-                                    is StreamEvent.TextDelta -> {
-                                        if (!committedOutput) {
-                                            pendingDraftEvents += event
-                                            val textLen = pendingDraftEvents.sumOf { (it as? StreamEvent.TextDelta)?.text?.length ?: 0 }
-                                            if (textLen >= 20) {
+                    var attempt = 0
+                    var advanceToNextCandidate = false
+
+                    while (attempt <= MAX_CANDIDATE_TRANSIENT_RETRIES && !advanceToNextCandidate) {
+                        var committedOutput = false
+                        val pendingDraftEvents = mutableListOf<StreamEvent>()
+                        var candidateFailed: StreamEvent.Failure? = null
+
+                        suspend fun notifySwitchIfNeeded() {
+                            if (candidate.model != activeModel) {
+                                val reasonSummary = lastFailure?.message?.lineSequence()?.firstOrNull()?.take(90)
+                                    ?: "Primary model unavailable"
+                                send(
+                                    StreamEvent.ProviderChanged(
+                                        config = config.copy(model = candidate.model),
+                                        reason = "$reasonSummary · switched to ${candidate.model}",
+                                        persistSelection = false,
+                                    )
+                                )
+                                activeModel = candidate.model
+                            }
+                        }
+
+                        try {
+                            candidate.streamFactory()
+                                .timeout(FIRST_OUTPUT_TIMEOUT_MS.toDouble().milliseconds)
+                                .collect { event ->
+                                    when (event) {
+                                        is StreamEvent.Failure -> {
+                                            candidateFailed = event
+                                            throw RuntimeException("__UPSTREAM_FAILURE__")
+                                        }
+                                        is StreamEvent.TextDelta -> {
+                                            if (!committedOutput) {
+                                                pendingDraftEvents += event
+                                                val textLen = pendingDraftEvents.sumOf { (it as? StreamEvent.TextDelta)?.text?.length ?: 0 }
+                                                if (textLen >= 20) {
+                                                    committedOutput = true
+                                                    notifySwitchIfNeeded()
+                                                    for (d in pendingDraftEvents) send(d)
+                                                    pendingDraftEvents.clear()
+                                                }
+                                            } else {
+                                                send(event)
+                                            }
+                                        }
+                                        is StreamEvent.ToolCallDelta,
+                                        is StreamEvent.ToolCallReady,
+                                        is StreamEvent.ToolCallBatch,
+                                        is StreamEvent.Done -> {
+                                            if (!committedOutput) {
                                                 committedOutput = true
+                                                notifySwitchIfNeeded()
                                                 for (d in pendingDraftEvents) send(d)
                                                 pendingDraftEvents.clear()
                                             }
-                                        } else {
                                             send(event)
                                         }
-                                    }
-                                    is StreamEvent.ToolCallDelta,
-                                    is StreamEvent.ToolCallReady,
-                                    is StreamEvent.ToolCallBatch,
-                                    is StreamEvent.Done -> {
-                                        if (!committedOutput) {
-                                            committedOutput = true
-                                            for (d in pendingDraftEvents) send(d)
-                                            pendingDraftEvents.clear()
-                                        }
-                                        send(event)
-                                    }
-                                    else -> {
-                                        if (committedOutput) {
-                                            send(event)
-                                        } else {
-                                            pendingDraftEvents += event
+                                        else -> {
+                                            if (committedOutput) {
+                                                send(event)
+                                            } else {
+                                                pendingDraftEvents += event
+                                            }
                                         }
                                     }
                                 }
+                            if (candidateFailed == null) {
+                                if (!committedOutput) {
+                                    committedOutput = true
+                                    notifySwitchIfNeeded()
+                                    for (d in pendingDraftEvents) send(d)
+                                    pendingDraftEvents.clear()
+                                }
+                                markUpstreamHealthy(candidate.key)
+                                return@channelFlow
                             }
-                        if (candidateFailed == null) {
-                            if (!committedOutput) {
-                                committedOutput = true
-                                for (d in pendingDraftEvents) send(d)
-                                pendingDraftEvents.clear()
-                            }
-                            markUpstreamHealthy(candidate.key)
-                            return@channelFlow
-                        }
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        if (e !is TimeoutCancellationException) throw e
-                        pendingDraftEvents.clear()
-                        markUpstreamCooldown(candidate.key)
-                        lastFailure = StreamEvent.Failure(
-                            message = "Upstream ${candidate.model} timed out after ${FIRST_OUTPUT_TIMEOUT_MS / 1000}s",
-                            code = 504,
-                            retryable = true,
-                        )
-                    } catch (e: Throwable) {
-                        pendingDraftEvents.clear()
-                        val failure = candidateFailed ?: when (e) {
-                            is ApiException -> HarnessFreeLimit.normalize(
-                                StreamEvent.Failure(
-                                    e.message.orEmpty(),
-                                    e.code,
-                                    e.errorCode,
-                                    retryAfterSeconds = e.retryAfterSeconds,
-                                )
-                            )
-                            else -> StreamEvent.Failure(
-                                message = e.message ?: "Upstream request failed",
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            if (e !is TimeoutCancellationException) throw e
+                            pendingDraftEvents.clear()
+                            lastFailure = StreamEvent.Failure(
+                                message = "Upstream ${candidate.model} timed out after ${FIRST_OUTPUT_TIMEOUT_MS / 1000}s",
+                                code = 408,
                                 retryable = true,
                             )
+                        } catch (e: Throwable) {
+                            pendingDraftEvents.clear()
+                            val failure = candidateFailed ?: when (e) {
+                                is ApiException -> HarnessFreeLimit.normalize(
+                                    StreamEvent.Failure(
+                                        e.message.orEmpty(),
+                                        e.code,
+                                        e.errorCode,
+                                        retryAfterSeconds = e.retryAfterSeconds,
+                                    )
+                                )
+                                else -> StreamEvent.Failure(
+                                    message = e.message ?: "Upstream request failed",
+                                    retryable = true,
+                                )
+                            }
+                            lastFailure = failure
                         }
-                        lastFailure = failure
+
+                        val currentFailure = lastFailure
+                        if (committedOutput) {
+                            // Never lose or duplicate already-streamed partial output
+                            send(currentFailure ?: StreamEvent.Failure("Stream interrupted after partial output", retryable = false))
+                            return@channelFlow
+                        }
+                        if (currentFailure != null && com.androidharness.app.agent.RetryPolicy.isTerminalAuthOrRequestCode(currentFailure.code)) {
+                            // Terminal errors (400, 401, 403, 422) must not retry or silently mask
+                            send(currentFailure.copy(retryable = false))
+                            return@channelFlow
+                        }
+                        if (currentFailure != null && isCandidateTransientFailure(currentFailure) && attempt < MAX_CANDIDATE_TRANSIENT_RETRIES) {
+                            attempt++
+                            kotlinx.coroutines.delay(CANDIDATE_RETRY_DELAY_MS)
+                            continue
+                        }
                         markUpstreamCooldown(candidate.key)
+                        advanceToNextCandidate = true
                     }
-                    if (committedOutput || index == orderedCandidates.lastIndex) {
+
+                    if (index == orderedCandidates.lastIndex) {
                         send(lastFailure ?: StreamEvent.Failure("All Harness gateways failed"))
                         return@channelFlow
                     }

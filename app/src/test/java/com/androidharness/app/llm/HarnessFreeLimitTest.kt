@@ -116,4 +116,12 @@ class HarnessFreeLimitTest {
         assertNull(providerRetryAfterSeconds(Json.parseToJsonElement("""{"error":{"metadata":{"retry_after_seconds":-1}}}""")))
         assertNull(HarnessFreeLimit.notice("A different provider has insufficient quota"))
     }
+
+    @Test fun `transient timeouts and server errors are never misclassified as confirmed quota exhaustion`() {
+        assertFalse(HarnessFreeLimit.isConfirmedQuotaExhaustion(StreamEvent.Failure("Gateway timeout", code = 408)))
+        assertFalse(HarnessFreeLimit.isConfirmedQuotaExhaustion(StreamEvent.Failure("Server overloaded", code = 503)))
+        assertFalse(HarnessFreeLimit.isConfirmedQuotaExhaustion(StreamEvent.Failure("Unauthorized", code = 401)))
+        assertTrue(HarnessFreeLimit.isConfirmedQuotaExhaustion(StreamEvent.Failure("Payment required", code = 402)))
+        assertTrue(HarnessFreeLimit.isConfirmedQuotaExhaustion(StreamEvent.Failure("Limit", code = 429, errorCode = HarnessFreeLimit.QUOTA_CODE)))
+    }
 }

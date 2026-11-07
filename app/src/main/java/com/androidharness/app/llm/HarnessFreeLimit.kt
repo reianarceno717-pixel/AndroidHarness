@@ -54,4 +54,17 @@ internal object HarnessFreeLimit {
         }
         return Notice(kind, waitText.find(message)?.groupValues?.get(1)?.toLongOrNull())
     }
+
+    /**
+     * Distinguishes confirmed quota exhaustion from transient rate limits, timeouts, or 5xx errors
+     * so transient failures never trigger false instant-quota alerts.
+     */
+    fun isConfirmedQuotaExhaustion(failure: StreamEvent.Failure): Boolean {
+        if (failure.code == 401 || failure.code == 403 || failure.code == 404 || failure.code == 408) return false
+        if (failure.code != null && failure.code in 500..599) return false
+        if (failure.code == 402) return true
+        return failure.errorCode == QUOTA_CODE ||
+            failure.errorCode.equals("PROMOTION_MODEL_LIMIT_REACHED", ignoreCase = true) ||
+            (failure.code == 429 && quotaText.containsMatchIn(failure.message))
+    }
 }

@@ -47,4 +47,33 @@ internal object RetryPolicy {
         val jitter = (base * 0.3 * (Math.random() * 2 - 1)).toLong()
         return base + jitter
     }
+
+    enum class HttpErrorCategory(val terminal: Boolean, val summary: String) {
+        INVALID_OR_MISSING_KEY(true, "HTTP 401 — Invalid or missing API key"),
+        PAYMENT_OR_CREDITS_EXHAUSTED(true, "HTTP 402 — Payment required or exhausted credits"),
+        ACCESS_DENIED(true, "HTTP 403 — Access denied"),
+        MODEL_OR_ENDPOINT_UNAVAILABLE(true, "HTTP 404 — Model or endpoint unavailable"),
+        REQUEST_TIMEOUT(false, "HTTP 408 — Request timeout"),
+        RATE_LIMIT_OR_QUOTA(false, "HTTP 429 — Rate limit or quota exceeded"),
+        PROVIDER_SERVER_ERROR(false, "HTTP 5xx — Provider-side server error"),
+        CLIENT_OR_REQUEST_ERROR(true, "HTTP 4xx — Client request rejected"),
+        UNKNOWN(false, "Network or transport failure"),
+    }
+
+    /** Explicitly classifies HTTP status codes for Phase 1 error handling and fallback decisions. */
+    fun classifyHttpCode(code: Int?): HttpErrorCategory = when (code) {
+        401 -> HttpErrorCategory.INVALID_OR_MISSING_KEY
+        402 -> HttpErrorCategory.PAYMENT_OR_CREDITS_EXHAUSTED
+        403 -> HttpErrorCategory.ACCESS_DENIED
+        404 -> HttpErrorCategory.MODEL_OR_ENDPOINT_UNAVAILABLE
+        408 -> HttpErrorCategory.REQUEST_TIMEOUT
+        429 -> HttpErrorCategory.RATE_LIMIT_OR_QUOTA
+        in 500..599 -> HttpErrorCategory.PROVIDER_SERVER_ERROR
+        in 400..499 -> HttpErrorCategory.CLIENT_OR_REQUEST_ERROR
+        else -> HttpErrorCategory.UNKNOWN
+    }
+
+    /** Terminal authentication or request errors must never be retried indefinitely. */
+    fun isTerminalAuthOrRequestCode(code: Int?): Boolean =
+        code == 400 || code == 401 || code == 403 || code == 422
 }

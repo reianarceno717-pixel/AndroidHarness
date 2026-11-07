@@ -32,6 +32,7 @@ internal fun fallbackFailureKind(failure: StreamEvent.Failure, cause: Throwable?
     return if (transientCode || RetryPolicy.isRetryable(cause, failure.message, failure.code)) FallbackFailureKind.TRANSIENT else FallbackFailureKind.TERMINAL
 }
 
+// Fallback exists to keep the assistant usable when one provider genuinely fails — it is NOT a mechanism to hide errors.
 /** Each destination uses its own credentials. Only explicitly configured routes can be attempted. */
 class FallbackProvider(
     private val factory: (ProviderConfig) -> LlmProvider,
