@@ -38,6 +38,18 @@ class HarnessFreeLimitTest {
         assertEquals(FallbackFailureKind.QUOTA, fallbackFailureKind(failure))
     }
 
+    @Test fun `structured quota codes override non-429 upstream status codes`() = runBlocking {
+        val body = """{"error":{"code":"PROMOTION_MODEL_LIMIT_REACHED","message":"Come back later"}}"""
+        for (status in listOf(400, 402)) {
+            val failure = stream(body, code = status).toList().filterIsInstance<StreamEvent.Failure>().single()
+            assertEquals(HarnessFreeLimit.QUOTA_CODE, failure.errorCode)
+            assertEquals(429, failure.code)
+            assertEquals(false, failure.retryable)
+            assertEquals(HarnessFreeLimit.Kind.QUOTA, HarnessFreeLimit.notice(failure.message)?.kind)
+            assertEquals(FallbackFailureKind.QUOTA, fallbackFailureKind(failure))
+        }
+    }
+
     @Test fun `documented and account free limit messages are recognized`() = runBlocking {
         for (body in listOf(
             """{"error":{"message":"Rate limit exceeded for free models. Please try again later.","code":429}}""",
