@@ -625,7 +625,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                                 .put("callId", pending.callId)
                                                 .put("fingerprint", com.androidharness.app.agent.RemotePromptIdentity.question(pending))
                                                 .put("question", pending.question)
-                                                .put("options", JSONArray().apply { pending.options.forEach(::put) })
+                                                .put("options", JSONArray().apply { pending.options.forEach { option -> put(option) } })
                                                 .put("multiSelect", pending.multiSelect))
                                         }
                                     }
@@ -1265,18 +1265,22 @@ async function sendPrompt() {
       body: JSON.stringify({ prompt: text, messages: [...chatHistory, { role: "user", content: text }] })
     });
     const data = await res.json();
-    document.getElementById("model-tag").textContent = data.model || "kilo-auto/free";
-    const replyText = data.reply || "Done.";
-    a.textContent = replyText;
-    if (Array.isArray(data.messages)) {
-      chatHistory = data.messages;
-      sessionStorage.setItem("androidHarnessChatHistory", JSON.stringify(chatHistory));
-    }
-    if (autoVoiceRead && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-      const cleanSpeech = replyText.replace(/[*#`_]/g, "").slice(0, 450);
-      const utter = new SpeechSynthesisUtterance(cleanSpeech);
-      window.speechSynthesis.speak(utter);
+    if (!res.ok || data.ok === false) {
+      a.textContent = data.error || data.reply || ("Request failed (HTTP " + res.status + ")");
+    } else {
+      document.getElementById("model-tag").textContent = data.model || "kilo-auto/free";
+      const replyText = data.reply || "Done.";
+      a.textContent = replyText;
+      if (Array.isArray(data.messages)) {
+        chatHistory = data.messages;
+        sessionStorage.setItem("androidHarnessChatHistory", JSON.stringify(chatHistory));
+      }
+      if (autoVoiceRead && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+        const cleanSpeech = replyText.replace(/[*#`_]/g, "").slice(0, 450);
+        const utter = new SpeechSynthesisUtterance(cleanSpeech);
+        window.speechSynthesis.speak(utter);
+      }
     }
   } catch (e) {
     a.textContent = "Error communicating with phone: " + e.message;
