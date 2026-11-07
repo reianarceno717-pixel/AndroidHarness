@@ -876,6 +876,46 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to change permission mode").toString())
                         }
                     }
+                    method == "GET" && path == "/api/buildtest" -> {
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val container = app.container
+                                    val requestedSessionId = queryValue(query, "sessionId")
+                                    val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
+                                    val session = container.sessions.session(sessionId) ?: error("The selected chat no longer exists.")
+                                    val workspace = container.workspace.forTools(sessionId, session.projectId).first()
+                                        ?: error("The selected chat workspace is unavailable.")
+                                    val project = container.workspace.projectForTools(sessionId, session.projectId).first()
+                                    val projectId = project?.id ?: session.projectId ?: error("The selected chat has no project workspace.")
+                                    val commands = JSONArray()
+                                    if (runCatching { workspace.resolve("gradlew").exists }.getOrDefault(false)) {
+                                        listOf("Tests" to "./gradlew test", "Debug APK" to "./gradlew assembleDebug", "Lint" to "./gradlew lint")
+                                            .forEach { (name, command) -> commands.put(JSONObject().put("name", name).put("command", command)) }
+                                    }
+                                    val packageFile = runCatching { workspace.resolve("package.json") }.getOrNull()
+                                    if (packageFile?.exists == true && packageFile.length <= 1_000_000) {
+                                        val scripts = runCatching { com.androidharness.app.core.ProjectLaunch.scripts(packageFile.readText()) }.getOrDefault(emptyList())
+                                        scripts.filter { it !in setOf("dev", "start", "preview") }.forEach { script ->
+                                            commands.put(JSONObject().put("name", "npm $script").put("command", com.androidharness.app.core.ProjectLaunch.npmCommand(script)))
+                                        }
+                                    }
+                                    val check = container.projectChecks.results.value[projectId]
+                                    val terminal = container.terminal.state.value
+                                    JSONObject().put("ok", true).put("sessionId", sessionId).put("projectId", projectId)
+                                        .put("projectName", project?.name ?: "Workspace").put("commands", commands)
+                                        .put("check", check?.let { JSONObject().put("name", it.name).put("status", it.status.name).put("updatedAt", it.updatedAt) } ?: JSONObject.NULL)
+                                        .put("terminalBusy", terminal.busy || terminal.stopping)
+                                        .put("output", JSONArray().apply { terminal.lines.takeLast(300).forEach { put(it) } })
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8", JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to load Build & Test").toString())
+                        }
+                    }
                     method == "GET" && path == "/api/terminal/status" -> {
                         val app = appContext.applicationContext as? HarnessApp
                         if (app == null) {
@@ -1077,6 +1117,66 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             }
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8",
                                 history.toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/buildtest/run" -> {
+                        val payload = try { JSONObject(body.ifBlank { "{}" }) }
+                        catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val requestedSessionId = payload.optString("sessionId").trim()
+                        val requestedName = payload.optString("name").trim().take(128)
+                        val requestedCommand = payload.optString("command").trim()
+                        if (requestedSessionId.isBlank() || requestedName.isBlank() || requestedCommand.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A session, check name and command are required"}""")
+                            return
+                        }
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val container = app.container
+                                    val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
+                                    check(sessionId == requestedSessionId) { "The selected chat changed. Refresh Build & Test." }
+                                    val session = container.sessions.session(sessionId) ?: error("The selected chat no longer exists.")
+                                    val workspace = container.workspace.forTools(sessionId, session.projectId).first()
+                                        ?: error("The selected chat workspace is unavailable.")
+                                    val project = container.workspace.projectForTools(sessionId, session.projectId).first()
+                                    val projectId = project?.id ?: session.projectId ?: error("The selected chat has no project workspace.")
+                                    val allowed = mutableListOf<Pair<String, String>>()
+                                    if (runCatching { workspace.resolve("gradlew").exists }.getOrDefault(false)) {
+                                        allowed += listOf("Tests" to "./gradlew test", "Debug APK" to "./gradlew assembleDebug", "Lint" to "./gradlew lint")
+                                    }
+                                    val packageFile = runCatching { workspace.resolve("package.json") }.getOrNull()
+                                    if (packageFile?.exists == true && packageFile.length <= 1_000_000) {
+                                        val scripts = runCatching { com.androidharness.app.core.ProjectLaunch.scripts(packageFile.readText()) }.getOrDefault(emptyList())
+                                        scripts.filter { it !in setOf("dev", "start", "preview") }.forEach { script ->
+                                            allowed += "npm $script" to com.androidharness.app.core.ProjectLaunch.npmCommand(script)
+                                        }
+                                    }
+                                    check(allowed.any { it.first == requestedName && it.second == requestedCommand }) {
+                                        "That build command is not available for the selected project. Refresh the list."
+                                    }
+                                    val root = (workspace as? com.androidharness.app.workspace.SshFs)?.root
+                                        ?: workspace.shellRoot?.absolutePath ?: error("The selected workspace has no shell directory.")
+                                    val quotedRoot = "'" + root.replace("'", "'\\''") + "'"
+                                    val shellCommand = "cd " + quotedRoot + " && " + requestedCommand
+                                    val terminal = container.terminal
+                                    check(!terminal.state.value.busy && !terminal.state.value.stopping) {
+                                        "The shared AndroidHarness terminal is already running a command."
+                                    }
+                                    terminal.useWorkspace(workspace)
+                                    terminal.clear()
+                                    terminal.send(shellCommand, workspace, sessionId, projectId)
+                                    container.projectChecks.track(projectId, requestedName, shellCommand)
+                                    JSONObject().put("ok", true).put("accepted", true).put("sessionId", sessionId).put("projectId", projectId)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 202, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8", JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to start build check").toString())
                         }
                     }
                     method == "POST" && path == "/api/terminal/stop" -> {
