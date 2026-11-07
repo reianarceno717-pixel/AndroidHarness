@@ -1544,6 +1544,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
       <option value="">Loading chats…</option>
     </select>
     <button class="btn-secondary" onclick="createRemoteChat()" style="padding:7px 9px">+ Chat</button>
+    <button class="btn-secondary" id="project-rename" onclick="renameRemoteProject()" style="padding:7px 8px" disabled>Rename</button>
+    <button class="btn-secondary" id="project-delete" onclick="deleteRemoteProject()" style="padding:7px 8px" disabled>Delete</button>
     <div class="meta" id="status-meta">Phone-hosted AndroidHarness runtime</div>
   </div>
 </header>
@@ -2163,9 +2165,17 @@ function renderPendingControls(data) {
   }
   host.appendChild(card);
 }
+function updateProjectActions() {
+  const select = document.getElementById("project-select");
+  const option = select && select.selectedOptions[0];
+  const canManage = !!(select && select.value && option && option.dataset.kind !== "app");
+  document.getElementById("project-rename").disabled = !canManage;
+  document.getElementById("project-delete").disabled = !canManage;
+}
 async function loadRemoteProjects() {
   const select = document.getElementById("project-select");
   if (!select || !sessionToken) return;
+  const previous = select.value;
   try {
     const res = await apiFetch("/api/projects");
     const data = await res.json();
@@ -2179,9 +2189,58 @@ async function loadRemoteProjects() {
       const option = document.createElement("option");
       option.value = project.id;
       option.textContent = project.name || "Untitled project";
+      option.dataset.kind = project.kind || "";
       select.appendChild(option);
     });
-  } catch (_) { /* Keep the default workspace available if project listing fails. */ }
+    if (data.projects.some(project => project.id === previous)) select.value = previous;
+    updateProjectActions();
+  } catch (_) { updateProjectActions(); }
+}
+async function renameRemoteProject() {
+  const select = document.getElementById("project-select");
+  const projectId = select.value;
+  const current = select.selectedOptions[0]?.textContent || "";
+  if (!projectId) return;
+  const name = prompt("Rename this AndroidHarness project:", current);
+  if (name === null || !name.trim()) return;
+  try {
+    const res = await apiFetch("/api/projects/rename", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({projectId, name})
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to rename project");
+    await loadRemoteProjects();
+    select.value = projectId;
+    updateProjectActions();
+  } catch (error) { alert(error.message || "Unable to rename project"); }
+}
+async function deleteRemoteProject() {
+  const select = document.getElementById("project-select");
+  const projectId = select.value;
+  if (!projectId) return;
+  try {
+    const previewRes = await apiFetch("/api/projects/delete-preview", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({projectId})
+    });
+    const preview = await previewRes.json();
+    if (!previewRes.ok || !preview.ok) throw new Error(preview.error || "Unable to review project deletion");
+    if (preview.blocker) { alert("This project cannot be deleted yet.\n\n" + preview.blocker); return; }
+    const warning = "Delete project ‘" + preview.name + "’?\n\nThis also deletes " + preview.chatCount +
+      " chat(s) and " + preview.automationCount + " related automation(s). This cannot be undone.";
+    if (!confirm(warning)) return;
+    const res = await apiFetch("/api/projects/delete", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({projectId})
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to delete project");
+    await loadRemoteProjects();
+    await loadRemoteSessions();
+    await Promise.all([loadRemoteModels(), loadChatHistory(), loadFiles(), refreshBridgeStatus()]);
+    alert("Project deleted. " + (data.deletedChats || 0) + " chat(s) and " + (data.deletedAutomations || 0) + " automation(s) removed.");
+  } catch (error) { alert(error.message || "Unable to delete project"); }
 }
 async function createRemoteChat() {
   const title = prompt("Name this AndroidHarness chat:", "New remote chat");
@@ -2361,6 +2420,7 @@ async function sendPrompt() {
   }
   box.scrollTop = box.scrollHeight;
 }
+document.getElementById("project-select").addEventListener("change", updateProjectActions);
 loadFiles();
 loadChatHistory();
 refreshRemoteTerminal();
