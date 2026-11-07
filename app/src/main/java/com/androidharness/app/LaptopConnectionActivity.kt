@@ -541,6 +541,91 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 JSONObject().put("error", result.exceptionOrNull()?.message ?: "Unable to load projects").toString())
                         }
                     }
+                    method == "POST" && path == "/api/projects/rename" -> {
+                        val payload = try { JSONObject(body.ifBlank { "{}" }) }
+                        catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val projectId = payload.optString("projectId").trim()
+                        val name = payload.optString("name").trim()
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (projectId.isBlank() || name.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A project and non-empty name are required"}""")
+                        } else if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val project = app.container.workspace.projects.first().firstOrNull { it.id == projectId }
+                                        ?: error("This project is no longer available.")
+                                    check(project.kind != com.androidharness.app.workspace.WorkspaceManager.KIND_APP) {
+                                        "The built-in app workspace cannot be renamed here."
+                                    }
+                                    app.container.workspace.renameProject(projectId, name)
+                                    JSONObject().put("ok", true).put("projectId", projectId).put("name", name)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to rename project").toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/projects/delete-preview" -> {
+                        val payload = try { JSONObject(body.ifBlank { "{}" }) }
+                        catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val projectId = payload.optString("projectId").trim()
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (projectId.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A project is required"}""")
+                        } else if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val preview = app.container.projectDeletion.preview(projectId)
+                                    JSONObject().put("ok", true).put("projectId", projectId)
+                                        .put("name", preview.project.name).put("chatCount", preview.chatIds.size)
+                                        .put("automationCount", preview.automationIds.size)
+                                        .put("blocker", preview.blocker ?: "")
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to review project deletion").toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/projects/delete" -> {
+                        val payload = try { JSONObject(body.ifBlank { "{}" }) }
+                        catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val projectId = payload.optString("projectId").trim()
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (projectId.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A project is required"}""")
+                        } else if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val deletion = app.container.projectDeletion
+                                    val preview = deletion.preview(projectId)
+                                    check(preview.blocker == null) { preview.blocker ?: "Project deletion is blocked." }
+                                    deletion.delete(preview)
+                                    JSONObject().put("ok", true).put("projectId", projectId)
+                                        .put("deletedChats", preview.chatIds.size).put("deletedAutomations", preview.automationIds.size)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to delete project").toString())
+                        }
+                    }
                     method == "GET" && path == "/api/sessions" -> {
                         val app = appContext.applicationContext as? HarnessApp
                         if (app == null) {
