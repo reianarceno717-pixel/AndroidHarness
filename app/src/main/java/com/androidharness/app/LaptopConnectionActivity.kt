@@ -2173,7 +2173,7 @@ async function loadRemoteSkills() {
       const desc = document.createElement("div"); desc.textContent = skill.description || ""; desc.style.cssText = "font-size:10px;color:#94A3B8;line-height:1.4;margin-top:4px";
       const meta = document.createElement("div"); meta.textContent = (skill.category || "General") + " · " + (skill.source || "Unknown"); meta.style.cssText = "font-size:10px;color:#7DD3FC;margin-top:5px";
       const actions = document.createElement("div"); actions.style.cssText = "display:flex;gap:5px;flex-wrap:wrap;margin-top:8px";
-      const view = document.createElement("button"); view.textContent = "View"; view.className = "btn-secondary"; view.style.cssText = "padding:6px 8px;font-size:10px"; view.onclick = () => viewRemoteSkill(skill.name);
+      const view = document.createElement("button"); view.textContent = "View"; view.className = "btn-secondary"; view.style.cssText = "padding:6px 8px;font-size:10px"; view.disabled = !skill.enabled; view.title = skill.enabled ? "View skill content" : "Enable this skill before viewing"; view.onclick = () => viewRemoteSkill(skill.name);
       const toggle = document.createElement("button"); toggle.textContent = skill.enabled ? "Disable" : "Enable"; toggle.style.cssText = "padding:6px 8px;font-size:10px"; toggle.onclick = () => toggleRemoteSkill(skill.name,!skill.enabled);
       actions.append(view,toggle);
       if (skill.source === "USER") { const del = document.createElement("button"); del.textContent = "Delete"; del.className = "btn-secondary"; del.style.cssText = "padding:6px 8px;font-size:10px"; del.onclick = () => deleteRemoteSkill(skill.name); actions.appendChild(del); }
