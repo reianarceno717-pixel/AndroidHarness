@@ -961,6 +961,47 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to change permission mode").toString())
                         }
                     }
+                    method == "GET" && path == "/api/automations" -> {
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val projectId = queryValue(query, "projectId").trim()
+                                    val manager = app.container.automation
+                                    val tasks = manager.repository.tasks.value.filter { projectId.isBlank() || it.projectId == projectId }
+                                    val items = JSONArray().apply {
+                                        tasks.forEach { task ->
+                                            put(JSONObject().put("id", task.id).put("title", task.title)
+                                                .put("projectId", task.projectId).put("projectName", task.projectName)
+                                                .put("prompt", task.prompt).put("checkCommand", task.checkCommand)
+                                                .put("schedule", task.schedule.name).put("enabled", task.enabled)
+                                                .put("status", task.lastStatus.name).put("lastMessage", task.lastMessage ?: "")
+                                                .put("lastRunAt", task.lastRunAt ?: JSONObject.NULL)
+                                                .put("nextRunAt", task.nextRunAt ?: JSONObject.NULL)
+                                                .put("hour", task.hour).put("minute", task.minute)
+                                                .put("unmeteredOnly", task.unmeteredOnly)
+                                                .put("active", task.activeRun != null))
+                                        }
+                                    }
+                                    val taskIds = tasks.map { it.id }.toSet()
+                                    val history = JSONArray().apply {
+                                        manager.repository.history.value.filter { it.taskId in taskIds }.take(100).forEach { entry ->
+                                            put(JSONObject().put("id", entry.id).put("taskId", entry.taskId)
+                                                .put("title", entry.title).put("status", entry.status.name)
+                                                .put("message", entry.message ?: "").put("sessionId", entry.sessionId ?: "")
+                                                .put("startedAt", entry.startedAt).put("finishedAt", entry.finishedAt ?: JSONObject.NULL))
+                                        }
+                                    }
+                                    JSONObject().put("ok", true).put("tasks", items).put("history", history)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 500, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to load automations").toString())
+                        }
+                    }
                     method == "GET" && path == "/api/buildtest" -> {
                         val app = appContext.applicationContext as? HarnessApp
                         if (app == null) {
@@ -1202,6 +1243,43 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             }
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8",
                                 history.toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/automations/action" -> {
+                        val payload = try { JSONObject(body.ifBlank { "{}" }) }
+                        catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val taskId = payload.optString("taskId").trim()
+                        val projectId = payload.optString("projectId").trim()
+                        val action = payload.optString("action").trim().lowercase()
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (taskId.isBlank() || action !in setOf("run", "pause", "resume", "cancel", "delete")) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A valid automation and action are required"}""")
+                        } else if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val manager = app.container.automation
+                                    val task = manager.repository.task(taskId) ?: error("This automation no longer exists.")
+                                    check(projectId.isBlank() || task.projectId == projectId) {
+                                        "This automation does not belong to the selected project."
+                                    }
+                                    when (action) {
+                                        "run" -> manager.runNow(taskId)
+                                        "pause" -> manager.pause(taskId)
+                                        "resume" -> manager.resumeSchedule(taskId)
+                                        "cancel" -> manager.cancel(taskId)
+                                        "delete" -> manager.delete(taskId)
+                                    }
+                                    JSONObject().put("ok", true).put("taskId", taskId).put("action", action)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to update automation").toString())
                         }
                     }
                     method == "POST" && path == "/api/buildtest/run" -> {
