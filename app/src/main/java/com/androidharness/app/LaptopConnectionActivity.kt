@@ -493,35 +493,58 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         writeHttpResponse(sock, 405, "application/json; charset=utf-8", """{"error":"Method not allowed. Use GET or POST."}""")
                     }
                     method == "GET" && path == "/api/ping" -> {
-                        val json = JSONObject()
-                            .put("ok", true)
-                            .put("app", "AndroidHarness Laptop Studio")
-                            .put("model", HarnessProvider.DEFAULT_MODEL)
-                            .put("port", activePort)
-                            .put("workspace", workspaceDir.absolutePath)
-                        writeHttpResponse(sock, 200, "application/json; charset=utf-8", json.toString())
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val json = runCatching {
+                                runBlocking {
+                                    val sessionId = getOrCreateRemoteSession(app)
+                                    val workspace = app.container.workspace.forSession(sessionId)
+                                    JSONObject()
+                                        .put("ok", true)
+                                        .put("app", "AndroidHarness Laptop Studio")
+                                        .put("model", HarnessProvider.DEFAULT_MODEL)
+                                        .put("port", activePort)
+                                        .put("sessionId", sessionId)
+                                        .put("workspace", workspace.displayPath)
+                                }
+                            }.getOrElse {
+                                JSONObject().put("ok", false).put("error", it.message ?: "Unable to resolve the active workspace")
+                            }
+                            writeHttpResponse(sock, if (json.optBoolean("ok")) 200 else 500,
+                                "application/json; charset=utf-8", json.toString())
+                        }
                     }
                     method == "GET" && path == "/api/files" -> {
-                        val visibleFiles = workspaceDir.walkTopDown().maxDepth(4)
-                            .filter { file ->
-                                file.isFile && file.name != ".androidharness-chat-history.json" &&
-                                    !file.name.endsWith(".androidharness-chat-history.json.next")
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val json = runCatching {
+                                runBlocking {
+                                    val sessionId = getOrCreateRemoteSession(app)
+                                    val workspace = app.container.workspace.forSession(sessionId)
+                                    val visibleFiles = workspace.walk(".")
+                                        .filter { node ->
+                                            node.isFile && !isBridgeInternalPath(node.relPath) &&
+                                                node.relPath.split('/', '\\').size <= 4
+                                        }
+                                        .take(501)
+                                        .toList()
+                                    val files = JSONArray()
+                                    visibleFiles.take(500).forEach { node ->
+                                        files.put(JSONObject().put("path", node.relPath).put("size", node.length))
+                                    }
+                                    JSONObject().put("files", files).put("truncated", visibleFiles.size > 500)
+                                        .put("sessionId", sessionId).put("workspace", workspace.displayPath)
+                                }
+                            }.getOrElse {
+                                JSONObject().put("error", it.message ?: "Unable to list active workspace files")
                             }
-                            .take(501)
-                            .toList()
-                        val files = JSONArray()
-                        visibleFiles.take(500).forEach { file ->
-                            val rel = file.relativeTo(workspaceDir).path
-                            files.put(
-                                JSONObject()
-                                    .put("path", rel)
-                                    .put("size", file.length())
-                            )
+                            writeHttpResponse(sock, if (json.has("files")) 200 else 500,
+                                "application/json; charset=utf-8", json.toString())
                         }
-                        val json = JSONObject()
-                            .put("files", files)
-                            .put("truncated", visibleFiles.size > 500)
-                        writeHttpResponse(sock, 200, "application/json; charset=utf-8", json.toString())
                     }
                     method == "GET" && path == "/api/file" -> {
                         val relPath = runCatching {
@@ -532,24 +555,33 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 ?.let { URLDecoder.decode(it, "UTF-8") }
                                 .orEmpty()
                         }.getOrNull()
-                        val target = relPath?.let { runCatching { File(workspaceDir, it).canonicalFile }.getOrNull() }
-                        when {
-                            relPath.isNullOrBlank() || target == null || isBridgeInternalPath(relPath) ||
-                                !target.path.startsWith(workspaceDir.canonicalPath + File.separator) || !target.isFile -> {
-                                writeHttpResponse(sock, 404, "application/json; charset=utf-8", """{"error":"File not found"}""")
-                            }
-                            target.length() > 2 * 1024 * 1024 -> {
-                                writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"File exceeds the 2 MB preview limit"}""")
-                            }
-                            else -> {
-                                runCatching {
-                                    JSONObject()
-                                        .put("path", relPath)
-                                        .put("content", target.readText(Charsets.UTF_8))
-                                }.onSuccess { json ->
-                                    writeHttpResponse(sock, 200, "application/json; charset=utf-8", json.toString())
-                                }.onFailure {
-                                    writeHttpResponse(sock, 500, "application/json; charset=utf-8", """{"error":"Unable to read file"}""")
+                        val safePath = !relPath.isNullOrBlank() && !relPath.startsWith("/") &&
+                            relPath.split('/', '\\').none { it.isBlank() || it == "." || it == ".." } &&
+                            !isBridgeInternalPath(relPath)
+                        if (!safePath) {
+                            writeHttpResponse(sock, 404, "application/json; charset=utf-8", """{"error":"File not found"}""")
+                        } else {
+                            val app = appContext.applicationContext as? HarnessApp
+                            if (app == null) {
+                                writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                            } else {
+                                val result = runCatching {
+                                    runBlocking {
+                                        val sessionId = getOrCreateRemoteSession(app)
+                                        val node = app.container.workspace.forSession(sessionId).resolve(relPath!!)
+                                        check(node.exists && node.isFile) { "File not found" }
+                                        check(node.length <= 2 * 1024 * 1024) { "File exceeds the 2 MB preview limit" }
+                                        JSONObject().put("path", relPath).put("content", node.readText())
+                                    }
+                                }
+                                if (result.isSuccess) {
+                                    writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                                } else {
+                                    val error = result.exceptionOrNull()
+                                    val status = if (error?.message?.contains("2 MB") == true) 413 else
+                                        if (error?.message?.contains("File not found") == true) 404 else 500
+                                    writeHttpResponse(sock, status, "application/json; charset=utf-8",
+                                        JSONObject().put("error", error?.message ?: "Unable to read file").toString())
                                 }
                             }
                         }
@@ -561,36 +593,38 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
                             return
                         }
-                        val relPath = payload.optString("path").trim().removePrefix("/")
-                        val contentValue = payload.opt("content")
-                        val content = contentValue as? String
-                        val target = runCatching { File(workspaceDir, relPath).canonicalFile }.getOrNull()
+                        val relPath = payload.optString("path").trim()
+                        val content = payload.opt("content") as? String
+                        val safePath = relPath.isNotEmpty() && relPath.length <= 1024 &&
+                            !relPath.startsWith("/") &&
+                            relPath.split('/', '\\').none { it == "." || it == ".." || it.isBlank() } &&
+                            !isBridgeInternalPath(relPath)
                         when {
-                            relPath.isEmpty() || relPath.length > 1024 ||
-                                relPath.split('/', '\\\\').any { it == "." || it == ".." || it.isBlank() } ||
-                                isBridgeInternalPath(relPath) || target == null ||
-                                !target.path.startsWith(workspaceDir.canonicalPath + File.separator) ||
-                                content == null -> {
+                            !safePath || content == null -> {
                                 writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Invalid file path or content"}""")
                             }
                             content.toByteArray(Charsets.UTF_8).size > 2 * 1024 * 1024 -> {
                                 writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"File content exceeds the 2 MB limit"}""")
                             }
-                            target.isDirectory -> {
-                                writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Target path is a directory"}""")
-                            }
                             else -> {
-                                val parent = target.parentFile
-                                if (parent == null || (!parent.exists() && !parent.mkdirs()) || !parent.isDirectory) {
-                                    writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Unable to create target directory"}""")
+                                val app = appContext.applicationContext as? HarnessApp
+                                if (app == null) {
+                                    writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
                                 } else {
-                                    runCatching { target.writeText(content, Charsets.UTF_8) }
-                                        .onSuccess {
-                                            writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
+                                    val result = runCatching {
+                                        runBlocking {
+                                            val sessionId = getOrCreateRemoteSession(app)
+                                            val node = app.container.workspace.forSession(sessionId).resolve(relPath)
+                                            check(!node.isDirectory) { "Target path is a directory" }
+                                            node.writeText(content)
                                         }
-                                        .onFailure {
-                                            writeHttpResponse(sock, 500, "application/json; charset=utf-8", """{"error":"Unable to save file"}""")
-                                        }
+                                    }
+                                    if (result.isSuccess) {
+                                        writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
+                                    } else {
+                                        writeHttpResponse(sock, 500, "application/json; charset=utf-8",
+                                            JSONObject().put("error", result.exceptionOrNull()?.message ?: "Unable to save file").toString())
+                                    }
                                 }
                             }
                         }
