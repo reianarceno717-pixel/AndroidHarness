@@ -269,8 +269,18 @@ class LaptopConnectionActivity : AppCompatActivity() {
          * Resolve this on every request rather than caching it: opening another chat
          * in the Android UI must switch the remote browser to that same conversation.
          */
-        private suspend fun getOrCreateRemoteSession(app: HarnessApp): String {
+        private suspend fun getOrCreateRemoteSession(
+            app: HarnessApp,
+            requestedSessionId: String? = null,
+        ): String {
             val container = app.container
+            val requested = requestedSessionId?.trim().orEmpty()
+            if (requested.isNotEmpty()) {
+                check(container.sessions.session(requested) != null) {
+                    "The selected AndroidHarness chat no longer exists. Refresh the session list."
+                }
+                return requested
+            }
             val lastActiveId = container.settings.settings.first().lastActiveSessionId
             if (!lastActiveId.isNullOrBlank() && container.sessions.session(lastActiveId) != null) {
                 return lastActiveId
@@ -289,6 +299,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
             prefs.edit().putString(REMOTE_SESSION_KEY, id).apply()
             return id
         }
+
+        private fun queryValue(query: String, key: String): String =
+            query.split("&")
+                .map { it.split("=", limit = 2) }
+                .firstOrNull { it.firstOrNull() == key }
+                ?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }.orEmpty()
 
         private fun remoteHistoryJson(messages: List<ChatMessage>): JSONArray = JSONArray().apply {
             messages.asSequence()
@@ -501,6 +517,31 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     method !in setOf("GET", "POST") -> {
                         writeHttpResponse(sock, 405, "application/json; charset=utf-8", """{"error":"Method not allowed. Use GET or POST."}""")
                     }
+                    method == "GET" && path == "/api/sessions" -> {
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val sessions = app.container.sessions.sessions.first().take(100)
+                                    val items = JSONArray()
+                                    sessions.forEach { session ->
+                                        items.put(JSONObject()
+                                            .put("id", session.id)
+                                            .put("title", session.title)
+                                            .put("updatedAt", session.updatedAt)
+                                            .put("createdAt", session.createdAt)
+                                            .put("projectId", session.projectId ?: ""))
+                                    }
+                                    JSONObject().put("ok", true).put("sessions", items)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 500, "application/json; charset=utf-8",
+                                JSONObject().put("error", result.exceptionOrNull()?.message ?: "Unable to load chats").toString())
+                        }
+                    }
                     method == "GET" && path == "/api/ping" -> {
                         val app = appContext.applicationContext as? HarnessApp
                         if (app == null) {
@@ -532,11 +573,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         } else {
                             val json = runCatching {
                                 runBlocking {
-                                    val sessionId = getOrCreateRemoteSession(app)
-                                    val requestedSessionId = query.split("&")
-                                        .map { it.split("=", limit = 2) }
-                                        .firstOrNull { it.firstOrNull() == "sessionId" }
-                                        ?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }.orEmpty()
+                                    val requestedSessionId = queryValue(query, "sessionId")
+                                    val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
                                     check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
                                         "The active AndroidHarness chat changed. Refresh the remote view."
                                     }
@@ -636,8 +674,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 } else {
                                     val result = runCatching {
                                         runBlocking {
-                                            val sessionId = getOrCreateRemoteSession(app)
                                             val requestedSessionId = payload.optString("sessionId").trim()
+                                            val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
                                             check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
                                                 "The active AndroidHarness chat changed. Refresh the remote view."
                                             }
@@ -664,11 +702,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             val result = runCatching {
                                 runBlocking {
                                     val container = app.container
-                                    val sessionId = getOrCreateRemoteSession(app)
-                                    val requestedSessionId = query.split("&")
-                                        .map { it.split("=", limit = 2) }
-                                        .firstOrNull { it.firstOrNull() == "sessionId" }
-                                        ?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }.orEmpty()
+                                    val requestedSessionId = queryValue(query, "sessionId")
+                                    val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
                                     check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
                                         "The active AndroidHarness chat changed. Refresh the remote view."
                                     }
@@ -722,7 +757,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             val result = runCatching {
                                 runBlocking {
                                     val container = app.container
-                                    check(getOrCreateRemoteSession(app) == sessionId) {
+                                    check(getOrCreateRemoteSession(app, sessionId) == sessionId) {
                                         "The active AndroidHarness chat changed. Refresh the remote view."
                                     }
                                     check(!container.runManager.isRunning(sessionId)) {
@@ -767,7 +802,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             val result = runCatching {
                                 runBlocking {
                                     val container = app.container
-                                    check(getOrCreateRemoteSession(app) == sessionId) {
+                                    check(getOrCreateRemoteSession(app, sessionId) == sessionId) {
                                         "The active AndroidHarness chat changed. Refresh the remote view."
                                     }
                                     val mode = com.androidharness.app.agent.PermissionMode.values()
@@ -790,7 +825,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         } else {
                             val status = runCatching {
                                 runBlocking {
-                                    val sessionId = getOrCreateRemoteSession(app)
+                                    val requestedSessionId = queryValue(query, "sessionId")
+                                    val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
                                     val container = app.container
                                     val messages = container.sessions.messages(sessionId)
                                     val live = container.runManager.live(sessionId).value
@@ -942,11 +978,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         } else {
                             val history = runCatching {
                                 runBlocking {
-                                    val sessionId = getOrCreateRemoteSession(app)
-                                    val requestedSessionId = query.split("&")
-                                        .map { it.split("=", limit = 2) }
-                                        .firstOrNull { it.firstOrNull() == "sessionId" }
-                                        ?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }.orEmpty()
+                                    val requestedSessionId = queryValue(query, "sessionId")
+                                    val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
                                     check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
                                         "The active AndroidHarness chat changed. Refresh the remote view."
                                     }
@@ -990,8 +1023,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             val result = runCatching {
                                 runBlocking {
                                     val container = app.container
-                                    val sessionId = getOrCreateRemoteSession(app)
                                     val requestedSessionId = payload.optString("sessionId").trim()
+                                    val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
                                     check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
                                         "The active AndroidHarness chat changed. Refresh the remote view before sending."
                                     }
