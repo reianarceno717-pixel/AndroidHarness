@@ -1657,7 +1657,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   .mobile-tabs { display: none; background: #0F172A; border-bottom: 1px solid #1E293B; }
   .tab-btn { flex: 1; padding: 10px 4px; font-size: 12px; background: transparent; color: #94A3B8; border: none; border-bottom: 2px solid transparent; cursor: pointer; text-align: center; font-weight: 500; }
   .tab-btn.active { color: #38BDF8; border-bottom-color: #38BDF8; font-weight: 700; }
-  main { flex: 1; display: grid; grid-template-columns: 180px minmax(200px,1fr) minmax(260px,330px) minmax(260px,320px) minmax(240px,280px) minmax(240px,280px); min-height: 0; }
+  main { flex: 1; display: grid; grid-template-columns: 170px minmax(190px,1fr) minmax(240px,300px) minmax(240px,300px) minmax(220px,260px) minmax(220px,260px) minmax(220px,260px); min-height: 0; }
   .panel { border-right: 1px solid #1E293B; display: flex; flex-direction: column; min-height: 0; }
   .panel-header { padding: 9px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94A3B8; border-bottom: 1px solid #1E293B; display: flex; justify-content: space-between; align-items: center; }
   .file-list { flex: 1; overflow-y: auto; padding: 8px; }
@@ -1688,7 +1688,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   .decision-options label { display: flex; gap: 8px; align-items: flex-start; }
   .decision-options input { flex: 0 0 auto; margin-top: 2px; }
   .decision-answer { width: 100%; min-height: 70px; margin-top: 10px; resize: vertical; background: #0B1120; color: #F8FAFC; border: 1px solid #475569; border-radius: 6px; padding: 9px; font: inherit; }
-  @media (max-width: 1400px) {
+  @media (max-width: 1650px) {
     header { padding: 8px 12px; }
     .meta { display: none; }
     .mobile-tabs { display: flex; }
@@ -1719,6 +1719,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <button class="tab-btn" id="btn-tab-terminal" data-tab="terminal" onclick="switchMobileTab(this.dataset.tab)">⌘ Terminal</button>
   <button class="tab-btn" id="btn-tab-buildtest" data-tab="buildtest" onclick="switchMobileTab(this.dataset.tab)">✓ Build/Test</button>
   <button class="tab-btn" id="btn-tab-automations" data-tab="automations" onclick="switchMobileTab(this.dataset.tab)">◷ Automations</button>
+  <button class="tab-btn" id="btn-tab-skills" data-tab="skills" onclick="switchMobileTab(this.dataset.tab)">✧ Skills</button>
 </nav>
 <main>
   <section class="panel" id="panel-files">
@@ -1728,6 +1729,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <section class="panel editor-wrap" id="panel-editor">
     <div class="panel-header"><span id="current-file">Select or create file</span><button onclick="saveCurrentFile()">Save</button></div>
     <textarea id="editor" placeholder="Select a workspace file or ask the AI to code..."></textarea>
+  </section>
+  <section class="panel" id="panel-skills" style="border-right:none">
+    <div class="panel-header"><span>Skills</span><span id="skills-count">Loading…</span></div>
+    <div id="skills-list" style="flex:1;min-height:0;overflow:auto;padding:9px;display:flex;flex-direction:column;gap:8px"></div>
+    <pre id="skill-preview" style="display:none;max-height:220px;overflow:auto;margin:0;padding:9px;border-top:1px solid #1E293B;background:#050914;color:#CBD5E1;font:10px/1.4 monospace;white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+    <div style="padding:8px;border-top:1px solid #1E293B;color:#94A3B8;font-size:10px">Enable or disable skills remotely. Create and edit skill files in the native Skills editor.</div>
   </section>
   <section class="panel" id="panel-automations" style="border-right:none">
     <div class="panel-header"><span>Automations</span><span id="automation-count">Loading…</span></div>
@@ -2076,6 +2083,50 @@ async function runAutomationAction(task,action) {
     if (!res.ok || !data.ok) throw new Error(data.error || "Automation action failed");
     await loadRemoteAutomations();
   } catch (error) { alert(error.message || "Automation action failed"); }
+}
+let skillsRefreshInFlight = false;
+async function loadRemoteSkills() {
+  if (skillsRefreshInFlight || !sessionToken) return;
+  skillsRefreshInFlight = true;
+  try {
+    const res = await apiFetch("/api/skills"); const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to load skills");
+    const skills = Array.isArray(data.skills) ? data.skills : [];
+    document.getElementById("skills-count").textContent = skills.filter(x => x.enabled).length + " / " + skills.length + " enabled";
+    const host = document.getElementById("skills-list"); host.replaceChildren();
+    if (!skills.length) { const empty = document.createElement("div"); empty.textContent = "No skills found."; empty.style.cssText = "font-size:12px;color:#94A3B8"; host.appendChild(empty); }
+    skills.forEach(skill => {
+      const card = document.createElement("div"); card.style.cssText = "padding:9px;border:1px solid #334155;border-radius:8px;background:#0F172A";
+      const title = document.createElement("div"); title.textContent = skill.name; title.style.cssText = "font-size:12px;font-weight:700;overflow-wrap:anywhere";
+      const desc = document.createElement("div"); desc.textContent = skill.description || ""; desc.style.cssText = "font-size:10px;color:#94A3B8;line-height:1.4;margin-top:4px";
+      const meta = document.createElement("div"); meta.textContent = (skill.category || "General") + " · " + (skill.source || "Unknown"); meta.style.cssText = "font-size:10px;color:#7DD3FC;margin-top:5px";
+      const actions = document.createElement("div"); actions.style.cssText = "display:flex;gap:5px;flex-wrap:wrap;margin-top:8px";
+      const view = document.createElement("button"); view.textContent = "View"; view.className = "btn-secondary"; view.style.cssText = "padding:6px 8px;font-size:10px"; view.onclick = () => viewRemoteSkill(skill.name);
+      const toggle = document.createElement("button"); toggle.textContent = skill.enabled ? "Disable" : "Enable"; toggle.style.cssText = "padding:6px 8px;font-size:10px"; toggle.onclick = () => toggleRemoteSkill(skill.name,!skill.enabled);
+      actions.append(view,toggle);
+      if (skill.source === "USER") { const del = document.createElement("button"); del.textContent = "Delete"; del.className = "btn-secondary"; del.style.cssText = "padding:6px 8px;font-size:10px"; del.onclick = () => deleteRemoteSkill(skill.name); actions.appendChild(del); }
+      card.append(title,desc,meta,actions); host.appendChild(card);
+    });
+  } catch (error) { document.getElementById("skills-count").textContent = "Unavailable"; }
+  finally { skillsRefreshInFlight = false; }
+}
+async function viewRemoteSkill(name) {
+  try { const res = await apiFetch("/api/skill?name=" + encodeURIComponent(name)); const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to read skill");
+    const preview = document.getElementById("skill-preview"); preview.style.display = "block"; preview.textContent = data.content || "";
+  } catch (error) { alert(error.message || "Unable to read skill"); }
+}
+async function toggleRemoteSkill(name,enabled) {
+  try { const res = await apiFetch("/api/skills/toggle", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,enabled})}); const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to update skill"); await loadRemoteSkills();
+  } catch (error) { alert(error.message || "Unable to update skill"); }
+}
+async function deleteRemoteSkill(name) {
+  if (!confirm("Delete user skill ‘" + name + "’?")) return;
+  try { const res = await apiFetch("/api/skills/delete", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})}); const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to delete skill");
+    const preview = document.getElementById("skill-preview"); preview.style.display = "none"; preview.textContent = ""; await loadRemoteSkills();
+  } catch (error) { alert(error.message || "Unable to delete skill"); }
 }
 function switchMobileTab(tab) {
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -2631,6 +2682,7 @@ document.getElementById("project-select").addEventListener("change", updateProje
 document.getElementById("project-select").addEventListener("change", loadRemoteAutomations);
 loadFiles();
 loadChatHistory();
+loadRemoteSkills();
 loadRemoteAutomations();
 refreshRemoteTerminal();
 refreshRemoteBuildTest();
@@ -2641,6 +2693,7 @@ setInterval(refreshBridgeStatus, 5000);
 setInterval(refreshRemoteTerminal, 1800);
 setInterval(refreshRemoteBuildTest, 2500);
 setInterval(loadRemoteAutomations, 7000);
+setInterval(loadRemoteSkills, 12000);
 </script></body></html>"""
     }
 }
