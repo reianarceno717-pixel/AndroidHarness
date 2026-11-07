@@ -618,6 +618,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     live.pendingApproval?.let { pending ->
                                         if (turnId != null) {
                                             statusJson.put("pendingApproval", JSONObject()
+                                                .put("sessionId", sessionId)
                                                 .put("turnId", turnId)
                                                 .put("callId", pending.call.id)
                                                 .put("fingerprint", com.androidharness.app.agent.RemotePromptIdentity.approval(pending))
@@ -630,6 +631,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     live.pendingQuestion?.let { pending ->
                                         if (turnId != null) {
                                             statusJson.put("pendingQuestion", JSONObject()
+                                                .put("sessionId", sessionId)
                                                 .put("turnId", turnId)
                                                 .put("callId", pending.callId)
                                                 .put("fingerprint", com.androidharness.app.agent.RemotePromptIdentity.question(pending))
@@ -654,11 +656,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
                             return
                         }
+                        val sessionId = payload.optString("sessionId").trim()
                         val turnId = payload.optString("turnId").trim()
                         val callId = payload.optString("callId").trim()
                         val fingerprint = payload.optString("fingerprint").trim()
-                        if (turnId.isEmpty() || callId.isEmpty() || fingerprint.isEmpty() || !payload.has("allow") || payload.opt("allow") !is Boolean) {
-                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"turnId, callId, fingerprint, and a boolean allow value are required"}""")
+                        if (sessionId.isEmpty() || turnId.isEmpty() || callId.isEmpty() || fingerprint.isEmpty() || !payload.has("allow") || payload.opt("allow") !is Boolean) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"sessionId, turnId, callId, fingerprint, and a boolean allow value are required"}""")
                             return
                         }
                         val app = appContext.applicationContext as? HarnessApp
@@ -666,12 +669,14 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
                             return
                         }
-                        val sessionId = runCatching { runBlocking { getOrCreateRemoteSession(app) } }.getOrNull()
-                        val accepted = sessionId?.let {
-                            app.container.runManager.respondToRemoteApproval(
-                                it, turnId, callId, payload.getBoolean("allow"), fingerprint,
-                            )
-                        } == true
+                        val accepted = runCatching {
+                            runBlocking {
+                                if (app.container.sessions.session(sessionId) == null) false
+                                else app.container.runManager.respondToRemoteApproval(
+                                    sessionId, turnId, callId, payload.getBoolean("allow"), fingerprint,
+                                )
+                            }
+                        }.getOrDefault(false)
                         if (accepted) {
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
                         } else {
@@ -685,12 +690,13 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
                             return
                         }
+                        val sessionId = payload.optString("sessionId").trim()
                         val turnId = payload.optString("turnId").trim()
                         val callId = payload.optString("callId").trim()
                         val fingerprint = payload.optString("fingerprint").trim()
                         val answer = payload.optString("answer")
-                        if (turnId.isEmpty() || callId.isEmpty() || fingerprint.isEmpty() || answer.isBlank()) {
-                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"turnId, callId, fingerprint, and a non-empty answer are required"}""")
+                        if (sessionId.isEmpty() || turnId.isEmpty() || callId.isEmpty() || fingerprint.isEmpty() || answer.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"sessionId, turnId, callId, fingerprint, and a non-empty answer are required"}""")
                             return
                         }
                         if (answer.length > 8_000) {
@@ -702,10 +708,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
                             return
                         }
-                        val sessionId = runCatching { runBlocking { getOrCreateRemoteSession(app) } }.getOrNull()
-                        val accepted = sessionId?.let {
-                            app.container.runManager.respondToRemoteQuestion(it, turnId, callId, answer, fingerprint)
-                        } == true
+                        val accepted = runCatching {
+                            runBlocking {
+                                if (app.container.sessions.session(sessionId) == null) false
+                                else app.container.runManager.respondToRemoteQuestion(sessionId, turnId, callId, answer, fingerprint)
+                            }
+                        }.getOrDefault(false)
                         if (accepted) {
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
                         } else {
@@ -1166,12 +1174,12 @@ function renderPendingControls(data) {
     deny.className = "btn-secondary";
     deny.textContent = "Deny";
     deny.onclick = () => submitRemoteDecision("/api/chat/approval", {
-      turnId: item.turnId, callId: item.callId, fingerprint: item.fingerprint, allow: false
+      sessionId: item.sessionId, turnId: item.turnId, callId: item.callId, fingerprint: item.fingerprint, allow: false
     });
     const allow = document.createElement("button");
     allow.textContent = "Approve";
     allow.onclick = () => submitRemoteDecision("/api/chat/approval", {
-      turnId: item.turnId, callId: item.callId, fingerprint: item.fingerprint, allow: true
+      sessionId: item.sessionId, turnId: item.turnId, callId: item.callId, fingerprint: item.fingerprint, allow: true
     });
     actions.append(deny, allow);
     card.appendChild(actions);
@@ -1208,7 +1216,7 @@ function renderPendingControls(data) {
       const response = [selected.join(item.multiSelect ? ", " : ""), typed].filter(Boolean).join("\n");
       if (!response) { answer.focus(); return; }
       submitRemoteDecision("/api/chat/question", {
-        turnId: item.turnId, callId: item.callId, fingerprint: item.fingerprint, answer: response
+        sessionId: item.sessionId, turnId: item.turnId, callId: item.callId, fingerprint: item.fingerprint, answer: response
       });
     };
     actions.appendChild(send);
