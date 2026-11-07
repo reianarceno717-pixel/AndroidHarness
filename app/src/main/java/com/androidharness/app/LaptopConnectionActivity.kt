@@ -1126,6 +1126,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   .msg { padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
   .msg.user { background: #1E293B; align-self: flex-end; max-width: 88%; }
   .msg.ai { background: #0F172A; border: 1px solid #1E293B; align-self: flex-start; width: 100%; }
+  .msg.error { border-color: #7F1D1D; background: #2A1117; color: #FECACA; }
   .chat-input { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #1E293B; background: #0F172A; align-items: center; }
   input, button { font-family: inherit; font-size: 13px; border-radius: 6px; }
   input { flex: 1; background: #1E293B; color: #F8FAFC; border: 1px solid #334155; padding: 9px 12px; outline: none; }
