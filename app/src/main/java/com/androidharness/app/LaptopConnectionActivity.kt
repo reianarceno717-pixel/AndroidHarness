@@ -298,7 +298,9 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 .forEach { message ->
                     put(JSONObject()
                         .put("role", message.role.name.lowercase())
-                        .put("content", message.text))
+                        .put("content", message.text)
+                        .put("isError", message.isError)
+                        .put("id", message.id ?: ""))
                 }
         }
 
@@ -798,6 +800,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                         .put("permissionMode", modelState.settings.permissionMode.name)
                                         .put("currentAction", live.currentToolAction ?: "")
                                         .put("retryStatus", live.retryStatus ?: "")
+                                        .put("error", live.error ?: "")
                                         .put("streaming", !live.streamingText.isNullOrBlank())
                                         .put("streamingText", live.streamingText.orEmpty().takeLast(12_000))
                                         .put("streamingThinking", live.streamingThinking.orEmpty().takeLast(4_000))
@@ -1401,7 +1404,7 @@ async function loadChatHistory() {
     box.innerHTML = "";
     chatHistory.forEach(m => {
       const node = document.createElement("div");
-      node.className = "msg " + (m.role === "user" ? "user" : "ai");
+      node.className = "msg " + (m.role === "user" ? "user" : "ai") + (m.isError ? " error" : "");
       node.textContent = m.content || "";
       box.appendChild(node);
     });
@@ -1498,17 +1501,24 @@ function renderExecutionStatus(data) {
   host.replaceChildren();
   const active = !!data.busy;
   const specialists = Array.isArray(data.specialists) ? data.specialists : [];
+  const errorText = typeof data.error === "string" ? data.error : "";
   const calls = Array.isArray(data.runningCalls) ? data.runningCalls : [];
   const action = data.retryStatus || data.currentAction || (calls.length ? "Running " + calls.length + " tool action(s)" : "");
-  if (!active && !specialists.length && !action) {
+  if (!active && !specialists.length && !action && !errorText) {
     host.style.display = "none";
     return;
   }
   host.style.display = "block";
   const heading = document.createElement("div");
   heading.style.cssText = "font-size:12px;font-weight:700;color:#7DD3FC;margin-bottom:6px";
-  heading.textContent = data.retryStatus ? "AI team · " + data.retryStatus : active ? "AI team · Working" : "AI team · Recent activity";
+  heading.textContent = data.retryStatus ? "AI team · " + data.retryStatus : active ? "AI team · Working" : errorText ? "AI team · Stopped" : "AI team · Recent activity";
   host.appendChild(heading);
+  if (errorText) {
+    const error = document.createElement("div");
+    error.style.cssText = "font-size:12px;color:#FCA5A5;white-space:pre-wrap;overflow-wrap:anywhere";
+    error.textContent = errorText;
+    host.appendChild(error);
+  }
   if (action && !data.retryStatus) {
     const line = document.createElement("div");
     line.style.cssText = "font-size:12px;color:#CBD5E1;margin-bottom:5px";
