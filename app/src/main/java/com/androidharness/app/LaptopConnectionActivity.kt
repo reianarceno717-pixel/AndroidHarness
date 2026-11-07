@@ -1572,7 +1572,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   .mobile-tabs { display: none; background: #0F172A; border-bottom: 1px solid #1E293B; }
   .tab-btn { flex: 1; padding: 10px 4px; font-size: 12px; background: transparent; color: #94A3B8; border: none; border-bottom: 2px solid transparent; cursor: pointer; text-align: center; font-weight: 500; }
   .tab-btn.active { color: #38BDF8; border-bottom-color: #38BDF8; font-weight: 700; }
-  main { flex: 1; display: grid; grid-template-columns: 190px minmax(220px,1fr) minmax(280px,360px) minmax(280px,340px) minmax(260px,300px); min-height: 0; }
+  main { flex: 1; display: grid; grid-template-columns: 180px minmax(200px,1fr) minmax(260px,330px) minmax(260px,320px) minmax(240px,280px) minmax(240px,280px); min-height: 0; }
   .panel { border-right: 1px solid #1E293B; display: flex; flex-direction: column; min-height: 0; }
   .panel-header { padding: 9px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94A3B8; border-bottom: 1px solid #1E293B; display: flex; justify-content: space-between; align-items: center; }
   .file-list { flex: 1; overflow-y: auto; padding: 8px; }
@@ -1603,7 +1603,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   .decision-options label { display: flex; gap: 8px; align-items: flex-start; }
   .decision-options input { flex: 0 0 auto; margin-top: 2px; }
   .decision-answer { width: 100%; min-height: 70px; margin-top: 10px; resize: vertical; background: #0B1120; color: #F8FAFC; border: 1px solid #475569; border-radius: 6px; padding: 9px; font: inherit; }
-  @media (max-width: 1100px) {
+  @media (max-width: 1400px) {
     header { padding: 8px 12px; }
     .meta { display: none; }
     .mobile-tabs { display: flex; }
@@ -1633,6 +1633,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <button class="tab-btn" id="btn-tab-editor" onclick="switchMobileTab('editor')">📝 Editor</button>
   <button class="tab-btn" id="btn-tab-terminal" data-tab="terminal" onclick="switchMobileTab(this.dataset.tab)">⌘ Terminal</button>
   <button class="tab-btn" id="btn-tab-buildtest" data-tab="buildtest" onclick="switchMobileTab(this.dataset.tab)">✓ Build/Test</button>
+  <button class="tab-btn" id="btn-tab-automations" data-tab="automations" onclick="switchMobileTab(this.dataset.tab)">◷ Automations</button>
 </nav>
 <main>
   <section class="panel" id="panel-files">
@@ -1642,6 +1643,11 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <section class="panel editor-wrap" id="panel-editor">
     <div class="panel-header"><span id="current-file">Select or create file</span><button onclick="saveCurrentFile()">Save</button></div>
     <textarea id="editor" placeholder="Select a workspace file or ask the AI to code..."></textarea>
+  </section>
+  <section class="panel" id="panel-automations" style="border-right:none">
+    <div class="panel-header"><span>Automations</span><span id="automation-count">Loading…</span></div>
+    <div id="automation-list" style="flex:1;min-height:0;overflow:auto;padding:9px;display:flex;flex-direction:column;gap:8px"></div>
+    <div style="padding:8px;border-top:1px solid #1E293B;color:#94A3B8;font-size:10px">Controls existing phone-scheduled tasks. Create and edit schedules in the native AndroidHarness automation editor.</div>
   </section>
   <section class="panel" id="panel-buildtest" style="border-right:none">
     <div class="panel-header"><span>Build &amp; Test</span><span id="buildtest-status">Loading…</span></div>
@@ -1947,6 +1953,44 @@ async function runRemoteBuildCheck(name,command) {
     document.getElementById("buildtest-status").textContent = "Running";
   } catch (error) { document.getElementById("buildtest-status").textContent = error.message || "Unable to start"; }
   finally { buildTestRunInFlight = false; await refreshRemoteBuildTest(); }
+}
+let automationRefreshInFlight = false;
+async function loadRemoteAutomations() {
+  if (automationRefreshInFlight || !sessionToken) return;
+  automationRefreshInFlight = true;
+  try {
+    const projectId = document.getElementById("project-select")?.value || "";
+    const res = await apiFetch("/api/automations" + (projectId ? "?projectId=" + encodeURIComponent(projectId) : ""));
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to load automations");
+    const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+    document.getElementById("automation-count").textContent = tasks.length + " task(s)";
+    const host = document.getElementById("automation-list"); host.replaceChildren();
+    if (!tasks.length) { const empty = document.createElement("div"); empty.textContent = "No automations in this project yet."; empty.style.cssText = "font-size:12px;color:#94A3B8;line-height:1.5"; host.appendChild(empty); }
+    tasks.forEach(task => {
+      const card = document.createElement("div"); card.style.cssText = "padding:9px;border:1px solid #334155;border-radius:8px;background:#0F172A";
+      const title = document.createElement("div"); title.textContent = task.title || "Untitled automation"; title.style.cssText = "font-size:12px;font-weight:700;overflow-wrap:anywhere";
+      const meta = document.createElement("div"); meta.textContent = task.schedule + " · " + task.status + (task.enabled ? " · enabled" : " · paused"); meta.style.cssText = "font-size:10px;color:#7DD3FC;margin-top:4px";
+      const detail = document.createElement("div"); detail.textContent = task.lastMessage || task.prompt || ""; detail.style.cssText = "font-size:11px;color:#94A3B8;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:6px";
+      const actions = document.createElement("div"); actions.style.cssText = "display:flex;flex-wrap:wrap;gap:5px;margin-top:8px";
+      const addAction = (label,action,secondary) => { const button = document.createElement("button"); button.textContent = label; if (secondary) button.className = "btn-secondary"; button.style.cssText = "padding:6px 8px;font-size:10px"; button.onclick = () => runAutomationAction(task,action); actions.appendChild(button); };
+      addAction("Run now","run",false);
+      if (task.enabled) addAction("Pause","pause",true); else addAction("Resume","resume",true);
+      if (task.active) addAction("Cancel","cancel",true);
+      addAction("Delete","delete",true);
+      card.append(title,meta,detail,actions); host.appendChild(card);
+    });
+  } catch (error) { document.getElementById("automation-count").textContent = "Unavailable"; }
+  finally { automationRefreshInFlight = false; }
+}
+async function runAutomationAction(task,action) {
+  if (action === "delete" && !confirm("Delete automation ‘" + task.title + "’?")) return;
+  try {
+    const res = await apiFetch("/api/automations/action", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({taskId:task.id,projectId:task.projectId,action}) });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Automation action failed");
+    await loadRemoteAutomations();
+  } catch (error) { alert(error.message || "Automation action failed"); }
 }
 function switchMobileTab(tab) {
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -2499,8 +2543,10 @@ async function sendPrompt() {
   box.scrollTop = box.scrollHeight;
 }
 document.getElementById("project-select").addEventListener("change", updateProjectActions);
+document.getElementById("project-select").addEventListener("change", loadRemoteAutomations);
 loadFiles();
 loadChatHistory();
+loadRemoteAutomations();
 refreshRemoteTerminal();
 refreshRemoteBuildTest();
 refreshBridgeStatus().then(async () => {
@@ -2509,6 +2555,7 @@ refreshBridgeStatus().then(async () => {
 setInterval(refreshBridgeStatus, 5000);
 setInterval(refreshRemoteTerminal, 1800);
 setInterval(refreshRemoteBuildTest, 2500);
+setInterval(loadRemoteAutomations, 7000);
 </script></body></html>"""
     }
 }
