@@ -517,6 +517,30 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     method !in setOf("GET", "POST") -> {
                         writeHttpResponse(sock, 405, "application/json; charset=utf-8", """{"error":"Method not allowed. Use GET or POST."}""")
                     }
+                    method == "GET" && path == "/api/projects" -> {
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val projects = app.container.workspace.projects.first().take(200)
+                                    val items = JSONArray()
+                                    projects.forEach { project ->
+                                        items.put(JSONObject()
+                                            .put("id", project.id)
+                                            .put("name", project.name)
+                                            .put("kind", project.kind)
+                                            .put("lastUsedAt", project.lastUsedAt))
+                                    }
+                                    JSONObject().put("ok", true).put("projects", items)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 500, "application/json; charset=utf-8",
+                                JSONObject().put("error", result.exceptionOrNull()?.message ?: "Unable to load projects").toString())
+                        }
+                    }
                     method == "GET" && path == "/api/sessions" -> {
                         val app = appContext.applicationContext as? HarnessApp
                         if (app == null) {
@@ -540,6 +564,43 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
                             else writeHttpResponse(sock, 500, "application/json; charset=utf-8",
                                 JSONObject().put("error", result.exceptionOrNull()?.message ?: "Unable to load chats").toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/chat/new" -> {
+                        val payload = try {
+                            JSONObject(body.ifBlank { "{}" })
+                        } catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val requestedTitle = payload.optString("title").trim().take(100)
+                        val projectId = payload.optString("projectId").trim().takeIf { it.isNotEmpty() }
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val container = app.container
+                                    if (projectId != null) {
+                                        check(container.workspace.projects.first().any { it.id == projectId }) {
+                                            "The selected project is no longer available."
+                                        }
+                                    }
+                                    val title = requestedTitle.ifBlank { "New remote chat" }
+                                    val sessionId = container.sessions.createSession(
+                                        title = title,
+                                        projectId = projectId,
+                                        conversation = ConversationConfig(kind = ConversationKind.CHAT),
+                                    )
+                                    container.chatModels.initialize(sessionId)
+                                    JSONObject().put("ok", true).put("sessionId", sessionId).put("title", title)
+                                        .put("projectId", projectId ?: "")
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to create chat").toString())
                         }
                     }
                     method == "GET" && path == "/api/ping" -> {
@@ -1194,9 +1255,13 @@ class LaptopConnectionActivity : AppCompatActivity() {
 <header>
   <div class="brand"><span class="dot"></span> AndroidHarness Virtual Studio</div>
   <div style="display:flex;align-items:center;gap:10px;min-width:0">
-    <select id="session-select" aria-label="AndroidHarness chat session" onchange="switchRemoteSession(this.value)" style="max-width:220px;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px">
+    <select id="project-select" aria-label="Project for new chat" style="max-width:150px;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px">
+      <option value="">Default workspace</option>
+    </select>
+    <select id="session-select" aria-label="AndroidHarness chat session" onchange="switchRemoteSession(this.value)" style="max-width:190px;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px">
       <option value="">Loading chats…</option>
     </select>
+    <button class="btn-secondary" onclick="createRemoteChat()" style="padding:7px 9px">+ Chat</button>
     <div class="meta" id="status-meta">Phone-hosted AndroidHarness runtime</div>
   </div>
 </header>
@@ -1692,6 +1757,49 @@ function renderPendingControls(data) {
   }
   host.appendChild(card);
 }
+async function loadRemoteProjects() {
+  const select = document.getElementById("project-select");
+  if (!select || !sessionToken) return;
+  try {
+    const res = await apiFetch("/api/projects");
+    const data = await res.json();
+    if (!res.ok || !Array.isArray(data.projects)) throw new Error(data.error || "Unable to load projects");
+    select.replaceChildren();
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = "Default workspace";
+    select.appendChild(defaultOption);
+    data.projects.forEach(project => {
+      const option = document.createElement("option");
+      option.value = project.id;
+      option.textContent = project.name || "Untitled project";
+      select.appendChild(option);
+    });
+  } catch (_) { /* Keep the default workspace available if project listing fails. */ }
+}
+async function createRemoteChat() {
+  const title = prompt("Name this AndroidHarness chat:", "New remote chat");
+  if (title === null) return;
+  const projectId = document.getElementById("project-select").value;
+  try {
+    const res = await apiFetch("/api/chat/new", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({title, projectId})
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to create chat");
+    resetRemoteChatForSession(data.sessionId);
+    await loadRemoteSessions();
+    const select = document.getElementById("session-select");
+    if (select) select.value = data.sessionId;
+    await Promise.all([loadRemoteModels(), loadChatHistory(), loadFiles()]);
+    await refreshBridgeStatus();
+  } catch (error) {
+    alert(error.message || "Unable to create chat");
+  }
+}
+
 async function loadRemoteSessions() {
   const select = document.getElementById("session-select");
   if (!select || !sessionToken) return;
@@ -1846,7 +1954,9 @@ async function sendPrompt() {
 }
 loadFiles();
 loadChatHistory();
-refreshBridgeStatus().then(loadRemoteSessions);
+refreshBridgeStatus().then(async () => {
+  await Promise.all([loadRemoteSessions(), loadRemoteProjects()]);
+});
 setInterval(refreshBridgeStatus, 5000);
 </script></body></html>"""
     }
