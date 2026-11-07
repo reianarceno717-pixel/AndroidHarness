@@ -105,7 +105,10 @@ internal val ProviderBrands: List<ProviderBrand?> = listOf(
     // The newer Responses API (gpt-5/o-series first-class reasoning; some
     // latest models exist only there), same key as plain OpenAI.
     ProviderBrand("OpenAI (Responses)", ProviderType.OPENAI_RESPONSES, "https://api.openai.com/v1", true),
-    ProviderBrand("Groq", ProviderType.OPENAI_COMPAT, "https://api.groq.com/openai/v1", true),
+    ProviderBrand("Groq", ProviderType.OPENAI_COMPAT, "https://api.groq.com/openai/v1", true, "llama-3.3-70b-versatile"),
+    ProviderBrand("Cerebras", ProviderType.OPENAI_COMPAT, "https://api.cerebras.ai/v1", true, "llama-3.3-70b"),
+    ProviderBrand("SambaNova", ProviderType.OPENAI_COMPAT, "https://api.sambanova.ai/v1", true, "Meta-Llama-3.3-70B-Instruct"),
+    ProviderBrand("GitHub Models", ProviderType.OPENAI_COMPAT, "https://models.inference.ai.azure.com/v1", true, "gpt-4o-mini"),
     ProviderBrand("DeepSeek", ProviderType.OPENAI_COMPAT, "https://api.deepseek.com/v1", true),
     ProviderBrand("Together", ProviderType.OPENAI_COMPAT, "https://api.together.xyz/v1", true),
     ProviderBrand("Mistral", ProviderType.OPENAI_COMPAT, "https://api.mistral.ai/v1", true),

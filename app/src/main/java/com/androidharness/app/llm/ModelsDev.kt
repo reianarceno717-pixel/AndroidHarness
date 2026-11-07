@@ -115,11 +115,11 @@ object ModelsDev {
         val curatedHosts = setOf(
             "openrouter.ai", "api.anthropic.com", "generativelanguage.googleapis.com",
             "api.openai.com", "api.groq.com", "api.deepseek.com", "api.together.xyz",
-            "api.mistral.ai", "127.0.0.1",
+            "api.mistral.ai", "api.cerebras.ai", "api.sambanova.ai", "models.inference.ai.azure.com", "127.0.0.1",
         )
         val curatedIds = setOf(
             "openrouter", "anthropic", "google", "openai", "groq",
-            "deepseek", "togetherai", "mistral",
+            "deepseek", "togetherai", "mistral", "cerebras", "sambanova", "github-models",
         )
         return all.filter { info ->
             protocolFor(info.npm) != null &&
@@ -150,6 +150,9 @@ object ModelsDev {
             "generativelanguage.googleapis.com" -> "google"
             "api.deepseek.com" -> "deepseek"
             "api.groq.com" -> "groq"
+            "api.cerebras.ai" -> "cerebras"
+            "api.sambanova.ai" -> "sambanova"
+            "models.inference.ai.azure.com" -> "github-models"
             "api.mistral.ai" -> "mistral"
             "api.moonshot.ai" -> "moonshotai"
             "api.moonshot.cn" -> "moonshotai-cn"
