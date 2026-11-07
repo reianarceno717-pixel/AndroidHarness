@@ -803,6 +803,10 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 runBlocking {
                                     val container = app.container
                                     val sessionId = getOrCreateRemoteSession(app)
+                                    val requestedSessionId = payload.optString("sessionId").trim()
+                                    check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
+                                        "The active AndroidHarness chat changed. Refresh the remote view before sending."
+                                    }
                                     val modelState = container.chatModels.observe(sessionId).first()
                                     check(modelState.error == null) {
                                         modelState.error ?: "Unable to load the remote chat model configuration"
@@ -1340,7 +1344,7 @@ async function sendPrompt() {
     const res = await apiFetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ prompt: text, messages: [...chatHistory, { role: "user", content: text }] })
+      body: JSON.stringify({ sessionId: bridgeSessionId, prompt: text, messages: [...chatHistory, { role: "user", content: text }] })
     });
     const data = await res.json();
     if (!res.ok || data.ok === false) {
