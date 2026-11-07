@@ -1079,6 +1079,33 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 history.toString())
                         }
                     }
+                    method == "POST" && path == "/api/terminal/stop" -> {
+                        val payload = try {
+                            JSONObject(body.ifBlank { "{}" })
+                        } catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val requestedSessionId = payload.optString("sessionId").trim()
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (requestedSessionId.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A chat session is required"}""")
+                        } else if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
+                                    check(sessionId == requestedSessionId) { "The selected chat changed. Refresh the remote terminal." }
+                                    app.container.terminal.interrupt()
+                                    JSONObject().put("ok", true).put("sessionId", sessionId)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 202, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to stop terminal command").toString())
+                        }
+                    }
                     method == "POST" && path == "/api/terminal/command" -> {
                         val payload = try {
                             JSONObject(body.ifBlank { "{}" })
@@ -1356,7 +1383,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
     <pre id="terminal-output" style="flex:1;min-height:0;overflow:auto;margin:0;padding:10px;background:#050914;color:#D1FAE5;font:12px/1.5 monospace;white-space:pre-wrap;overflow-wrap:anywhere">Terminal output will appear here.</pre>
     <div style="padding:8px;border-top:1px solid #1E293B;background:#0F172A">
       <textarea id="terminal-command" rows="3" maxlength="8000" placeholder="Run a command on the phone workspace…" style="width:100%;resize:vertical;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:9px;font:12px monospace"></textarea>
-      <button id="terminal-run" onclick="sendRemoteTerminalCommand()" style="width:100%;margin-top:7px">Run command</button>
+      <div style="display:flex;gap:7px;margin-top:7px"><button id="terminal-run" onclick="sendRemoteTerminalCommand()" style="flex:1">Run command</button><button class="btn-secondary" id="terminal-stop" onclick="stopRemoteTerminalCommand()" disabled>Stop</button></div>
       <div style="font-size:10px;color:#94A3B8;margin-top:6px">Runs on the phone using AndroidHarness configured shell and access tier. Shared with native terminal.</div>
     </div>
   </section>
@@ -1565,8 +1592,25 @@ async function refreshRemoteTerminal() {
     document.getElementById("terminal-cwd").textContent = data.cwd || "Workspace shell";
     document.getElementById("terminal-meta").textContent = (data.busy ? "Running" : data.started ? "Ready" : "Idle") + " · " + (data.backend || "Normal") + (data.lastExitCode === null ? "" : " · exit " + data.lastExitCode);
     document.getElementById("terminal-run").disabled = !!data.busy || !!data.stopping || terminalCommandInFlight;
+    document.getElementById("terminal-stop").disabled = !data.busy || !!data.stopping;
   } catch (error) { document.getElementById("terminal-meta").textContent = error.message || "Terminal unavailable"; }
   finally { terminalRefreshInFlight = false; }
+}
+async function stopRemoteTerminalCommand() {
+  if (!bridgeSessionId) return;
+  const stop = document.getElementById("terminal-stop");
+  stop.disabled = true;
+  try {
+    const res = await apiFetch("/api/terminal/stop", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({sessionId: bridgeSessionId})
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to stop command");
+    document.getElementById("terminal-meta").textContent = "Stopping…";
+  } catch (error) {
+    document.getElementById("terminal-meta").textContent = error.message || "Stop failed";
+  } finally { await refreshRemoteTerminal(); }
 }
 async function sendRemoteTerminalCommand() {
   const input = document.getElementById("terminal-command");
