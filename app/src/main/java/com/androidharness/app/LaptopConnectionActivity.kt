@@ -876,6 +876,33 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to change permission mode").toString())
                         }
                     }
+                    method == "GET" && path == "/api/terminal/status" -> {
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val requestedSessionId = queryValue(query, "sessionId")
+                                    val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
+                                    val state = app.container.terminal.state.value
+                                    JSONObject()
+                                        .put("ok", true)
+                                        .put("sessionId", sessionId)
+                                        .put("lines", JSONArray().apply { state.lines.takeLast(600).forEach { put(it) } })
+                                        .put("cwd", state.cwd)
+                                        .put("busy", state.busy)
+                                        .put("stopping", state.stopping)
+                                        .put("started", state.started)
+                                        .put("backend", state.backendLabel)
+                                        .put("lastExitCode", state.lastExitCode ?: JSONObject.NULL)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to read terminal").toString())
+                        }
+                    }
                     method == "GET" && path == "/api/chat/status" -> {
                         val app = appContext.applicationContext as? HarnessApp
                         if (app == null) {
@@ -1050,6 +1077,49 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             }
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8",
                                 history.toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/terminal/command" -> {
+                        val payload = try {
+                            JSONObject(body.ifBlank { "{}" })
+                        } catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val command = payload.optString("command").trimEnd()
+                        val requestedSessionId = payload.optString("sessionId").trim()
+                        if (command.isBlank() || requestedSessionId.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A chat session and terminal command are required"}""")
+                            return
+                        }
+                        if (command.length > 8_000) {
+                            writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"Terminal command exceeds the 8,000 character limit"}""")
+                            return
+                        }
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val container = app.container
+                                    val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
+                                    check(sessionId == requestedSessionId) { "The selected chat changed. Refresh the remote terminal." }
+                                    val session = container.sessions.session(sessionId)
+                                        ?: error("The selected chat no longer exists.")
+                                    val terminal = container.terminal
+                                    check(!terminal.state.value.busy && !terminal.state.value.stopping) {
+                                        "The shared AndroidHarness terminal is already running a command."
+                                    }
+                                    val workspace = container.workspace.forTools(sessionId, session.projectId).first()
+                                        ?: error("The selected chat workspace is unavailable.")
+                                    terminal.send(command, workspace, sessionId, session.projectId)
+                                    JSONObject().put("ok", true).put("accepted", true).put("sessionId", sessionId)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 202, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to run terminal command").toString())
                         }
                     }
                     method == "POST" && path == "/api/chat" -> {
