@@ -621,11 +621,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             } else {
                                 val result = runCatching {
                                     runBlocking {
-                                        val sessionId = getOrCreateRemoteSession(app)
-                                        val requestedSessionId = query.split("&")
-                                            .map { it.split("=", limit = 2) }
-                                            .firstOrNull { it.firstOrNull() == "sessionId" }
-                                            ?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }.orEmpty()
+                                        val requestedSessionId = queryValue(query, "sessionId")
+                                        val sessionId = getOrCreateRemoteSession(app, requestedSessionId)
                                         check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
                                             "The active AndroidHarness chat changed. Refresh the remote view."
                                         }
@@ -1196,7 +1193,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
 </style></head><body>
 <header>
   <div class="brand"><span class="dot"></span> AndroidHarness Virtual Studio</div>
-  <div class="meta" id="status-meta">Multi-Gateway AI Active · Zero-Install Second Phone Access</div>
+  <div style="display:flex;align-items:center;gap:10px;min-width:0">
+    <select id="session-select" aria-label="AndroidHarness chat session" onchange="switchRemoteSession(this.value)" style="max-width:220px;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px">
+      <option value="">Loading chats…</option>
+    </select>
+    <div class="meta" id="status-meta">Phone-hosted AndroidHarness runtime</div>
+  </div>
 </header>
 <nav class="mobile-tabs" id="mobile-tabs">
   <button class="tab-btn active" id="btn-tab-chat" onclick="switchMobileTab('chat')">💬 Chat &amp; Voice</button>
@@ -1690,12 +1692,52 @@ function renderPendingControls(data) {
   }
   host.appendChild(card);
 }
+async function loadRemoteSessions() {
+  const select = document.getElementById("session-select");
+  if (!select || !sessionToken) return;
+  try {
+    const res = await apiFetch("/api/sessions");
+    const data = await res.json();
+    if (!res.ok || !Array.isArray(data.sessions)) throw new Error(data.error || "Unable to load chats");
+    const previous = bridgeSessionId;
+    select.replaceChildren();
+    data.sessions.forEach(session => {
+      const option = document.createElement("option");
+      option.value = session.id;
+      const title = (session.title || "Untitled chat").trim();
+      option.textContent = title.length > 42 ? title.slice(0, 39) + "…" : title;
+      option.title = title;
+      select.appendChild(option);
+    });
+    if (previous && data.sessions.some(session => session.id === previous)) select.value = previous;
+    else if (data.sessions.length) {
+      select.value = data.sessions[0].id;
+      if (select.value !== bridgeSessionId) await switchRemoteSession(select.value);
+    }
+    select.disabled = data.sessions.length === 0;
+  } catch (error) {
+    select.replaceChildren();
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Chats unavailable";
+    select.appendChild(option);
+  }
+}
+async function switchRemoteSession(sessionId) {
+  if (!sessionId || sessionId === bridgeSessionId) return;
+  resetRemoteChatForSession(sessionId);
+  await Promise.all([loadRemoteModels(), loadChatHistory()]);
+  await refreshBridgeStatus();
+  await loadFiles();
+}
+
 async function refreshBridgeStatus() {
   const label = document.getElementById("status-meta");
   if (!label || !sessionToken || bridgeRefreshInFlight) return;
   bridgeRefreshInFlight = true;
   try {
-    const res = await apiFetch("/api/chat/status");
+    const statusUrl = "/api/chat/status" + (bridgeSessionId ? "?sessionId=" + encodeURIComponent(bridgeSessionId) : "");
+    const res = await apiFetch(statusUrl);
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || "Status unavailable");
     bridgeAssistantBusy = !!data.busy;
@@ -1804,7 +1846,7 @@ async function sendPrompt() {
 }
 loadFiles();
 loadChatHistory();
-refreshBridgeStatus();
+refreshBridgeStatus().then(loadRemoteSessions);
 setInterval(refreshBridgeStatus, 5000);
 </script></body></html>"""
     }
