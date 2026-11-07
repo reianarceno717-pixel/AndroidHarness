@@ -254,8 +254,8 @@ object FreeTierProviderCatalog {
             authRequirement = "x-goog-api-key (Google AI Studio free API key)",
             rateLimitSummary = "15 RPM · 1M TPM · 1,500 RPD on Gemini 2.5 Flash free tier",
             freeModels = listOf(
-                ModelEntry("gemini-2.5-flash", reasoning = true, contextTokens = 1_048_576, toolCall = true, imageInput = true, free = true, note = "Free tier · 15 RPM / 1,500 RPD"),
-                ModelEntry("gemini-2.5-flash-lite", reasoning = true, contextTokens = 1_048_576, toolCall = true, imageInput = true, free = true, note = "Free tier · High-throughput lightweight Flash"),
+                ModelEntry("gemini-2.5-flash", reasoning = true, contextTokens = 1_048_576, tools = true, imageInput = true, free = true, note = "Free tier · 15 RPM / 1,500 RPD"),
+                ModelEntry("gemini-2.5-flash-lite", reasoning = true, contextTokens = 1_048_576, tools = true, imageInput = true, free = true, note = "Free tier · high-throughput lightweight model"),
             ),
         ),
         FreeTierProviderInfo(
@@ -266,10 +266,10 @@ object FreeTierProviderCatalog {
             authRequirement = "Bearer API key (OpenRouter account key, $0 free models)",
             rateLimitSummary = "20 RPM · 50–1,000 RPD on :free suffixed community models",
             freeModels = listOf(
-                ModelEntry("deepseek/deepseek-chat-v3-0324:free", reasoning = false, contextTokens = 128_000, toolCall = true, free = true, note = "OpenRouter :free tier"),
-                ModelEntry("deepseek/deepseek-r1:free", reasoning = true, contextTokens = 128_000, toolCall = false, free = true, note = "OpenRouter :free reasoning"),
-                ModelEntry("meta-llama/llama-3.3-70b-instruct:free", reasoning = false, contextTokens = 128_000, toolCall = true, free = true, note = "OpenRouter :free tool-capable"),
-                ModelEntry("qwen/qwen-2.5-coder-32b-instruct:free", reasoning = false, contextTokens = 128_000, toolCall = true, free = true, note = "OpenRouter :free coding specialist"),
+                ModelEntry("deepseek/deepseek-chat-v3-0324:free", reasoning = false, contextTokens = 128_000, tools = true, free = true, note = "OpenRouter :free tier"),
+                ModelEntry("deepseek/deepseek-r1:free", reasoning = true, contextTokens = 128_000, tools = false, free = true, note = "OpenRouter :free reasoning"),
+                ModelEntry("meta-llama/llama-3.3-70b-instruct:free", reasoning = false, contextTokens = 128_000, tools = true, free = true, note = "OpenRouter :free tool-capable"),
+                ModelEntry("qwen/qwen-2.5-coder-32b-instruct:free", reasoning = false, contextTokens = 128_000, tools = true, free = true, note = "OpenRouter :free coding specialist"),
             ),
         ),
         FreeTierProviderInfo(
@@ -280,9 +280,9 @@ object FreeTierProviderCatalog {
             authRequirement = "Bearer API key (Groq Console free developer key)",
             rateLimitSummary = "30 RPM · 6,000–30,000 TPM · 1,000–14,400 RPD free developer tier",
             freeModels = listOf(
-                ModelEntry("llama-3.3-70b-versatile", reasoning = false, contextTokens = 128_000, toolCall = true, free = true, note = "Groq free tier · 30 RPM / 1K RPD"),
-                ModelEntry("llama-3.1-8b-instant", reasoning = false, contextTokens = 128_000, toolCall = true, free = true, note = "Groq free tier · 30 RPM / 14.4K RPD"),
-                ModelEntry("qwen-qwq-32b", reasoning = true, contextTokens = 128_000, toolCall = true, free = true, note = "Groq free tier reasoning"),
+                ModelEntry("llama-3.3-70b-versatile", reasoning = false, contextTokens = 128_000, tools = true, free = true, note = "Groq free tier · 30 RPM / 1K RPD"),
+                ModelEntry("llama-3.1-8b-instant", reasoning = false, contextTokens = 128_000, tools = true, free = true, note = "Groq free tier · 30 RPM / 14.4K RPD"),
+                ModelEntry("qwen-qwq-32b", reasoning = true, contextTokens = 128_000, tools = true, free = true, note = "Groq free tier reasoning"),
             ),
         ),
         FreeTierProviderInfo(
@@ -293,9 +293,9 @@ object FreeTierProviderCatalog {
             authRequirement = "Bearer API key (Cerebras Cloud free developer tier)",
             rateLimitSummary = "30 RPM · 60,000 TPM · 1,000,000 TPD free developer tier",
             freeModels = listOf(
-                ModelEntry("llama-3.3-70b", reasoning = false, contextTokens = 128_000, toolCall = true, free = true, note = "Cerebras free tier · ~2,000 tok/s · 1M TPD"),
-                ModelEntry("llama3.1-8b", reasoning = false, contextTokens = 128_000, toolCall = true, free = true, note = "Cerebras free tier · ultra-low latency"),
-                ModelEntry("qwen-3-32b", reasoning = true, contextTokens = 128_000, toolCall = true, free = true, note = "Cerebras free tier reasoning & code"),
+                ModelEntry("llama-3.3-70b", reasoning = false, contextTokens = 128_000, tools = true, free = true, note = "Cerebras free tier · ~2,000 tok/s · 1M TPD"),
+                ModelEntry("llama3.1-8b", reasoning = false, contextTokens = 128_000, tools = true, free = true, note = "Cerebras free tier · ultra-low latency"),
+                ModelEntry("qwen-3-32b", reasoning = true, contextTokens = 128_000, tools = true, free = true, note = "Cerebras free tier reasoning & code"),
             ),
         ),
         FreeTierProviderInfo(
@@ -306,9 +306,9 @@ object FreeTierProviderCatalog {
             authRequirement = "Bearer API key (SambaNova Cloud free developer tier)",
             rateLimitSummary = "20–30 RPM free developer tier on Llama 3.3 & DeepSeek R1/V3",
             freeModels = listOf(
-                ModelEntry("Meta-Llama-3.3-70B-Instruct", reasoning = false, contextTokens = 128_000, toolCall = true, free = true, note = "SambaNova free developer tier"),
-                ModelEntry("DeepSeek-R1", reasoning = true, contextTokens = 64_000, toolCall = false, free = true, note = "SambaNova free tier reasoning"),
-                ModelEntry("Qwen2.5-Coder-32B-Instruct", reasoning = false, contextTokens = 64_000, toolCall = true, free = true, note = "SambaNova free tier coding"),
+                ModelEntry("Meta-Llama-3.3-70B-Instruct", reasoning = false, contextTokens = 128_000, tools = true, free = true, note = "SambaNova free developer tier"),
+                ModelEntry("DeepSeek-R1", reasoning = true, contextTokens = 64_000, tools = false, free = true, note = "SambaNova free tier reasoning"),
+                ModelEntry("Qwen2.5-Coder-32B-Instruct", reasoning = false, contextTokens = 64_000, tools = true, free = true, note = "SambaNova free tier coding"),
             ),
         ),
         FreeTierProviderInfo(
@@ -319,9 +319,9 @@ object FreeTierProviderCatalog {
             authRequirement = "Bearer GitHub Personal Access Token (models:read scope)",
             rateLimitSummary = "10–15 RPM · 50–150 RPD free developer playground tier",
             freeModels = listOf(
-                ModelEntry("gpt-4o-mini", reasoning = false, contextTokens = 128_000, toolCall = true, imageInput = true, free = true, note = "GitHub Models free tier · 15 RPM / 150 RPD"),
-                ModelEntry("gpt-4o", reasoning = false, contextTokens = 128_000, toolCall = true, imageInput = true, free = true, note = "GitHub Models free tier · 10 RPM / 50 RPD"),
-                ModelEntry("DeepSeek-R1", reasoning = true, contextTokens = 64_000, toolCall = false, free = true, note = "GitHub Models free tier reasoning"),
+                ModelEntry("gpt-4o-mini", reasoning = false, contextTokens = 128_000, tools = true, imageInput = true, free = true, note = "GitHub Models free tier · 15 RPM / 150 RPD"),
+                ModelEntry("gpt-4o", reasoning = false, contextTokens = 128_000, tools = true, imageInput = true, free = true, note = "GitHub Models free tier · 10 RPM / 50 RPD"),
+                ModelEntry("DeepSeek-R1", reasoning = true, contextTokens = 64_000, tools = false, free = true, note = "GitHub Models free tier reasoning"),
             ),
         ),
     )
