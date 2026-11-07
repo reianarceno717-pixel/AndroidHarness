@@ -667,10 +667,11 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     check(state.error == null) { state.error ?: "Unable to load model selection" }
                                     val catalogs = container.providers.catalogs.first()
                                     val providersJson = JSONArray()
-                                    state.providers.filter { it.enabled }.forEach { provider ->
+                                    state.providers.filter { it.id !in state.settings.disabledProviderIds }.forEach { provider ->
                                         val modelsJson = JSONArray()
                                         catalogs[provider.id].orEmpty().forEach { model ->
-                                            modelsJson.put(JSONObject().put("id", model.id).put("name", model.name))
+                                            modelsJson.put(JSONObject().put("id", model.id)
+                                                .put("name", model.displayName ?: model.name ?: model.id))
                                         }
                                         providersJson.put(JSONObject().put("id", provider.id).put("name", provider.name)
                                             .put("model", provider.model).put("models", modelsJson))
@@ -714,8 +715,11 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     }
                                     val state = container.chatModels.observe(sessionId).first()
                                     check(state.error == null) { state.error ?: "Unable to load model selection" }
-                                    val provider = state.providers.firstOrNull { it.id == providerId && it.enabled }
-                                        ?: error("This provider is unavailable or disabled in AndroidHarness.")
+                                    check(providerId !in state.settings.disabledProviderIds) {
+                                        "This provider is disabled in AndroidHarness."
+                                    }
+                                    val provider = state.providers.firstOrNull { it.id == providerId }
+                                        ?: error("This provider is unavailable in AndroidHarness.")
                                     val chosenModel = model.ifBlank { provider.model }
                                     container.chatModels.select(sessionId, com.androidharness.app.data.ChatModelTarget.ACTIVE,
                                         provider.id, chosenModel)
@@ -1162,7 +1166,7 @@ function fillModelSelect(providerId, selectedModel) {
   select.disabled = !provider || modelSaveInFlight;
 }
 async function loadRemoteModels() {
-  if (!bridgeSessionId) return;
+  if (!bridgeSessionId || modelSaveInFlight) return;
   try {
     const requestedSessionId = bridgeSessionId;
     const res = await apiFetch("/api/models?sessionId=" + encodeURIComponent(requestedSessionId));
