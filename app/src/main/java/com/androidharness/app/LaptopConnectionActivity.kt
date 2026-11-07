@@ -1409,7 +1409,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   .mobile-tabs { display: none; background: #0F172A; border-bottom: 1px solid #1E293B; }
   .tab-btn { flex: 1; padding: 10px 4px; font-size: 12px; background: transparent; color: #94A3B8; border: none; border-bottom: 2px solid transparent; cursor: pointer; text-align: center; font-weight: 500; }
   .tab-btn.active { color: #38BDF8; border-bottom-color: #38BDF8; font-weight: 700; }
-  main { flex: 1; display: grid; grid-template-columns: 220px minmax(240px,1fr) minmax(320px,400px) 360px; min-height: 0; }
+  main { flex: 1; display: grid; grid-template-columns: 190px minmax(220px,1fr) minmax(280px,360px) minmax(280px,340px) minmax(260px,300px); min-height: 0; }
   .panel { border-right: 1px solid #1E293B; display: flex; flex-direction: column; min-height: 0; }
   .panel-header { padding: 9px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94A3B8; border-bottom: 1px solid #1E293B; display: flex; justify-content: space-between; align-items: center; }
   .file-list { flex: 1; overflow-y: auto; padding: 8px; }
@@ -1440,7 +1440,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   .decision-options label { display: flex; gap: 8px; align-items: flex-start; }
   .decision-options input { flex: 0 0 auto; margin-top: 2px; }
   .decision-answer { width: 100%; min-height: 70px; margin-top: 10px; resize: vertical; background: #0B1120; color: #F8FAFC; border: 1px solid #475569; border-radius: 6px; padding: 9px; font: inherit; }
-  @media (max-width: 768px) {
+  @media (max-width: 1100px) {
     header { padding: 8px 12px; }
     .meta { display: none; }
     .mobile-tabs { display: flex; }
@@ -1467,6 +1467,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <button class="tab-btn" id="btn-tab-files" onclick="switchMobileTab('files')">📁 Files</button>
   <button class="tab-btn" id="btn-tab-editor" onclick="switchMobileTab('editor')">📝 Editor</button>
   <button class="tab-btn" id="btn-tab-terminal" data-tab="terminal" onclick="switchMobileTab(this.dataset.tab)">⌘ Terminal</button>
+  <button class="tab-btn" id="btn-tab-buildtest" data-tab="buildtest" onclick="switchMobileTab(this.dataset.tab)">✓ Build/Test</button>
 </nav>
 <main>
   <section class="panel" id="panel-files">
@@ -1476,6 +1477,13 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <section class="panel editor-wrap" id="panel-editor">
     <div class="panel-header"><span id="current-file">Select or create file</span><button onclick="saveCurrentFile()">Save</button></div>
     <textarea id="editor" placeholder="Select a workspace file or ask the AI to code..."></textarea>
+  </section>
+  <section class="panel" id="panel-buildtest" style="border-right:none">
+    <div class="panel-header"><span>Build &amp; Test</span><span id="buildtest-status">Loading…</span></div>
+    <div id="buildtest-project" style="padding:9px 10px;color:#CBD5E1;font-size:12px;border-bottom:1px solid #1E293B">Selected project</div>
+    <div id="buildtest-check" style="padding:10px;border-bottom:1px solid #1E293B;color:#94A3B8;font-size:12px">No checks recorded yet.</div>
+    <div id="buildtest-commands" style="flex:1;min-height:0;overflow:auto;padding:9px;display:flex;flex-direction:column;gap:8px"></div>
+    <div style="padding:8px;border-top:1px solid #1E293B;color:#94A3B8;font-size:10px">Uses the project checks already available in the native AndroidHarness Build &amp; Test screen. Results are shared with the phone.</div>
   </section>
   <section class="panel" id="panel-terminal" style="border-right:none">
     <div class="panel-header"><span>Phone Terminal</span><span id="terminal-meta">Connecting…</span></div>
@@ -1725,6 +1733,53 @@ async function sendRemoteTerminalCommand() {
     input.value = "";
   } catch (error) { document.getElementById("terminal-meta").textContent = error.message || "Command failed"; }
   finally { terminalCommandInFlight = false; await refreshRemoteTerminal(); }
+}
+let buildTestRefreshInFlight = false;
+let buildTestRunInFlight = false;
+async function refreshRemoteBuildTest() {
+  if (!bridgeSessionId || buildTestRefreshInFlight || !sessionToken) return;
+  buildTestRefreshInFlight = true;
+  try {
+    const requestedSessionId = bridgeSessionId;
+    const res = await apiFetch("/api/buildtest?sessionId=" + encodeURIComponent(requestedSessionId));
+    const data = await res.json();
+    if (!res.ok || !data.ok || requestedSessionId !== bridgeSessionId) throw new Error(data.error || "Build & Test unavailable");
+    document.getElementById("buildtest-project").textContent = data.projectName || "Workspace";
+    const check = data.check;
+    const checkHost = document.getElementById("buildtest-check");
+    checkHost.textContent = check ? check.name + " · " + check.status + " · " + new Date(check.updatedAt).toLocaleString() : "No checks recorded for this project yet.";
+    checkHost.style.color = check && check.status === "PASSED" ? "#86EFAC" : check && check.status === "FAILED" ? "#FCA5A5" : "#94A3B8";
+    const host = document.getElementById("buildtest-commands");
+    const commands = Array.isArray(data.commands) ? data.commands : [];
+    const signature = JSON.stringify(commands.map(item => [item.name,item.command]));
+    if (host.dataset.signature !== signature) {
+      host.replaceChildren();
+      host.dataset.signature = signature;
+      if (!commands.length) { const empty = document.createElement("div"); empty.textContent = "No supported Gradle wrapper or npm scripts were detected in this project."; empty.style.cssText = "font-size:12px;color:#94A3B8;line-height:1.5"; host.appendChild(empty); }
+      commands.forEach(item => {
+        const card = document.createElement("div"); card.style.cssText = "padding:9px;border:1px solid #334155;border-radius:8px;background:#0F172A";
+        const title = document.createElement("div"); title.textContent = item.name; title.style.cssText = "font-size:12px;font-weight:700;margin-bottom:5px";
+        const code = document.createElement("code"); code.textContent = item.command; code.style.cssText = "display:block;color:#94A3B8;font-size:10px;overflow-wrap:anywhere;margin-bottom:8px";
+        const run = document.createElement("button"); run.textContent = "Run"; run.disabled = !!data.terminalBusy || buildTestRunInFlight;
+        run.onclick = () => runRemoteBuildCheck(item.name,item.command);
+        card.append(title,code,run); host.appendChild(card);
+      });
+    } else { host.querySelectorAll("button").forEach(button => { button.disabled = !!data.terminalBusy || buildTestRunInFlight; }); }
+    document.getElementById("buildtest-status").textContent = data.terminalBusy ? "Running" : "Ready";
+  } catch (error) { document.getElementById("buildtest-status").textContent = error.message || "Unavailable"; }
+  finally { buildTestRefreshInFlight = false; }
+}
+async function runRemoteBuildCheck(name,command) {
+  if (buildTestRunInFlight || !bridgeSessionId) return;
+  buildTestRunInFlight = true;
+  document.getElementById("buildtest-status").textContent = "Starting…";
+  try {
+    const res = await apiFetch("/api/buildtest/run", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({sessionId:bridgeSessionId,name,command}) });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Build check was not accepted");
+    document.getElementById("buildtest-status").textContent = "Running";
+  } catch (error) { document.getElementById("buildtest-status").textContent = error.message || "Unable to start"; }
+  finally { buildTestRunInFlight = false; await refreshRemoteBuildTest(); }
 }
 function switchMobileTab(tab) {
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -2099,7 +2154,9 @@ async function switchRemoteSession(sessionId) {
   if (!sessionId || sessionId === bridgeSessionId) return;
   resetRemoteChatForSession(sessionId);
   lastTerminalSnapshot = "";
-  await Promise.all([loadRemoteModels(), loadChatHistory(), refreshRemoteTerminal()]);
+  const buildCommands = document.getElementById("buildtest-commands");
+  if (buildCommands) delete buildCommands.dataset.signature;
+  await Promise.all([loadRemoteModels(), loadChatHistory(), refreshRemoteTerminal(), refreshRemoteBuildTest()]);
   await refreshBridgeStatus();
   await loadFiles();
 }
@@ -2220,11 +2277,13 @@ async function sendPrompt() {
 loadFiles();
 loadChatHistory();
 refreshRemoteTerminal();
+refreshRemoteBuildTest();
 refreshBridgeStatus().then(async () => {
   await Promise.all([loadRemoteSessions(), loadRemoteProjects()]);
 });
 setInterval(refreshBridgeStatus, 5000);
 setInterval(refreshRemoteTerminal, 1800);
+setInterval(refreshRemoteBuildTest, 2500);
 </script></body></html>"""
     }
 }
