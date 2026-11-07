@@ -976,7 +976,23 @@ async function apiFetch(url, options = {}) {
 }
 let activeFilePath = "";
 let chatHistory = [];
+let bridgeSessionId = sessionStorage.getItem("androidHarnessBridgeSessionId") || "";
 try { chatHistory = JSON.parse(sessionStorage.getItem("androidHarnessChatHistory") || "[]"); } catch (_) { chatHistory = []; }
+function resetRemoteChatForSession(sessionId) {
+  bridgeSessionId = sessionId || "";
+  sessionStorage.setItem("androidHarnessBridgeSessionId", bridgeSessionId);
+  chatHistory = [];
+  sessionStorage.setItem("androidHarnessChatHistory", "[]");
+  clearPendingControls();
+  const box = document.getElementById("chat-box");
+  if (box) {
+    box.replaceChildren();
+    const notice = document.createElement("div");
+    notice.className = "msg ai";
+    notice.textContent = "Switched to the active AndroidHarness conversation.";
+    box.appendChild(notice);
+  }
+}
 let autoVoiceRead = true;
 let isRecognizing = false;
 
@@ -1209,6 +1225,9 @@ async function refreshBridgeStatus() {
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || "Status unavailable");
     bridgeAssistantBusy = !!data.busy;
+    if (data.sessionId && data.sessionId !== bridgeSessionId) {
+      resetRemoteChatForSession(data.sessionId);
+    }
     renderPendingControls(data);
     const sendButton = document.querySelector(".chat-input button:last-child");
     if (sendButton && !chatRequestInFlight) sendButton.disabled = bridgeAssistantBusy;
