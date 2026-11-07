@@ -961,6 +961,40 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to change permission mode").toString())
                         }
                     }
+                    method == "GET" && path == "/api/skills" -> {
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                val items = JSONArray().apply {
+                                    app.container.skills.list().forEach { skill ->
+                                        put(JSONObject().put("name", skill.name).put("description", skill.description)
+                                            .put("category", skill.category).put("source", skill.source.name)
+                                            .put("enabled", skill.enabled))
+                                    }
+                                }
+                                JSONObject().put("ok", true).put("skills", items)
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 500, "application/json; charset=utf-8", JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to load skills").toString())
+                        }
+                    }
+                    method == "GET" && path == "/api/skill" -> {
+                        val name = queryValue(query, "name").trim()
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (name.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A skill name is required"}""")
+                        } else if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = app.container.skills.view(name).map { it.content.take(65536) }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8",
+                                JSONObject().put("ok", true).put("name", name).put("content", result.getOrThrow()).toString())
+                            else writeHttpResponse(sock, 404, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Skill not found").toString())
+                        }
+                    }
                     method == "GET" && path == "/api/automations" -> {
                         val app = appContext.applicationContext as? HarnessApp
                         if (app == null) {
@@ -1243,6 +1277,57 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             }
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8",
                                 history.toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/skills/toggle" -> {
+                        val payload = try { JSONObject(body.ifBlank { "{}" }) }
+                        catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val name = payload.optString("name").trim()
+                        val enabled = payload.optBoolean("enabled")
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (name.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A skill name is required"}""")
+                        } else if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                check(app.container.skills.list().any { it.name == name }) { "This skill is no longer available." }
+                                runBlocking { app.container.settings.setSkillEnabled(name, enabled) }
+                                JSONObject().put("ok", true).put("name", name).put("enabled", enabled)
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to change skill").toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/skills/delete" -> {
+                        val payload = try { JSONObject(body.ifBlank { "{}" }) }
+                        catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val name = payload.optString("name").trim()
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (name.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A skill name is required"}""")
+                        } else if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                val skill = app.container.skills.list().firstOrNull { it.name == name }
+                                    ?: error("This skill is no longer available.")
+                                check(skill.source == com.androidharness.app.skills.SkillSource.USER) {
+                                    "Only user-created skills can be deleted remotely."
+                                }
+                                check(app.container.skills.deleteUser(name)) { "Unable to delete this user skill." }
+                                JSONObject().put("ok", true).put("name", name)
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to delete skill").toString())
                         }
                     }
                     method == "POST" && path == "/api/automations/action" -> {
