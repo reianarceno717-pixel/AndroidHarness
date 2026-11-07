@@ -58,7 +58,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
         enableButton = findViewById(R.id.laptop_enable_button)
         copyButton = findViewById(R.id.laptop_copy_button)
 
-        ensureServerRunning(applicationContext)
+        BridgeHostService.start(applicationContext)
 
         copyButton.setOnClickListener {
             val address = addressText.text.toString()
@@ -80,7 +80,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        ensureServerRunning(applicationContext)
+        BridgeHostService.start(applicationContext)
         val detected = detectBestIpAddress()
         if (detected != null) {
             activateBridgeUi(detected.first)
@@ -88,7 +88,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
     }
 
     private fun startUsbTethering() {
-        ensureServerRunning(applicationContext)
+        BridgeHostService.start(applicationContext)
         val reflectionSuccess = tryUsbTethering(true)
         val detected = detectBestIpAddress()
 
@@ -355,6 +355,13 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 } catch (_: Exception) {
                 }
             }
+        }
+
+        /** Stops accepting remote clients when the foreground host service is stopped. */
+        @Synchronized
+        fun stopServer() {
+            runCatching { serverSocket?.close() }
+            serverSocket = null
         }
 
         private fun isBridgeInternalPath(relativePath: String): Boolean =
