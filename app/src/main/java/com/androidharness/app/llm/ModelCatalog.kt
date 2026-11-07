@@ -229,7 +229,6 @@ object ModelCatalog {
     }
 }
 
-
 /**
  * Maintainable free-tier provider directory and quota/limit reference (Phase 2).
  * Only lists providers with verified developer free tiers; never hardcodes private API keys.
@@ -255,7 +254,7 @@ object FreeTierProviderCatalog {
             rateLimitSummary = "15 RPM · 1M TPM · 1,500 RPD on Gemini 2.5 Flash free tier",
             freeModels = listOf(
                 ModelEntry("gemini-2.5-flash", reasoning = true, contextTokens = 1_048_576, tools = true, imageInput = true, free = true, note = "Free tier · 15 RPM / 1,500 RPD"),
-                ModelEntry("gemini-2.5-flash-lite", reasoning = true, contextTokens = 1_048_576, tools = true, imageInput = true, free = true, note = "Free tier · high-throughput lightweight model"),
+                ModelEntry("gemini-2.5-flash-lite", reasoning = true, contextTokens = 1_048_576, tools = true, imageInput = true, free = true, note = "Free tier · High-throughput lightweight model"),
             ),
         ),
         FreeTierProviderInfo(
