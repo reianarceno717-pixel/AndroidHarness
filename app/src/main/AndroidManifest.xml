@@ -165,6 +165,15 @@
         </provider>
 
         <service
+            android:name=".BridgeHostService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started local AndroidHarness remote access host serving the existing on-device runtime to paired devices, with a persistent notification and explicit stop action" />
+        </service>
+
+        <service
             android:name=".AgentService"
             android:foregroundServiceType="specialUse"
             android:exported="false">
