@@ -77,6 +77,19 @@ class HarnessFreeLimitTest {
         assertNotNull(HarnessFreeLimit.notice(result))
     }
 
+    @Test fun `silent upstream exhaustion preserves confirmed quota for outer fallback`() {
+        val quota = HarnessFreeLimit.normalize(StreamEvent.Failure(
+            "PROMOTION_MODEL_LIMIT_REACHED", code = 429, errorCode = "PROMOTION_MODEL_LIMIT_REACHED"))
+        val temporary = StreamEvent.Failure("A later gateway is temporarily unavailable", code = 503)
+        val ordinary = StreamEvent.Failure("A later gateway returned an unrelated error", code = 400)
+        assertEquals(quota, HarnessProvider.preferredExhaustedFailure(null, quota))
+        assertEquals(quota, HarnessProvider.preferredExhaustedFailure(quota, temporary))
+        assertEquals(quota, HarnessProvider.preferredExhaustedFailure(quota, ordinary))
+        assertEquals(HarnessFreeLimit.Kind.QUOTA,
+            HarnessFreeLimit.notice(HarnessProvider.preferredExhaustedFailure(temporary, quota).message)?.kind)
+        assertEquals(ordinary, HarnessProvider.preferredExhaustedFailure(temporary, ordinary))
+    }
+
     @Test fun `temporary upstream limits do not claim the hourly quota is exhausted`() = runBlocking {
         val failure = stream("""{"error":{"message":"Upstream model rate limit exceeded","metadata":{"limit_source":"upstream_provider_shared_pool","retry_after_seconds":1}}}""")
             .toList().filterIsInstance<StreamEvent.Failure>().single()
