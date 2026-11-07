@@ -249,6 +249,16 @@ object HarnessProvider {
         val streamFactory: () -> Flow<StreamEvent>,
     )
 
+    /** Keep a confirmed quota refusal visible if every silent upstream also fails. */
+    internal fun preferredExhaustedFailure(
+        current: StreamEvent.Failure?,
+        candidate: StreamEvent.Failure,
+    ): StreamEvent.Failure =
+        if (current != null && HarnessFreeLimit.notice(current.message)?.kind == HarnessFreeLimit.Kind.QUOTA) current
+        else if (HarnessFreeLimit.notice(candidate.message)?.kind == HarnessFreeLimit.Kind.QUOTA) candidate
+        else candidate
+
+
     private fun singleUpstreamStream(
         pooledClient: OkHttpClient,
         config: ProviderConfig,
@@ -434,6 +444,7 @@ object HarnessProvider {
             return channelFlow {
                 var activeModel = config.model
                 var lastFailure: StreamEvent.Failure? = null
+                var exhaustedQuotaFailure: StreamEvent.Failure? = null
 
                 for ((index, candidate) in orderedCandidates.withIndex()) {
                     var committedOutput = false
@@ -516,10 +527,13 @@ object HarnessProvider {
                             )
                         }
                         lastFailure = failure
+                        if (HarnessFreeLimit.notice(failure.message)?.kind == HarnessFreeLimit.Kind.QUOTA) {
+                            exhaustedQuotaFailure = preferredExhaustedFailure(exhaustedQuotaFailure, failure)
+                        }
                         markUpstreamCooldown(candidate.key)
                     }
                     if (committedOutput || index == orderedCandidates.lastIndex) {
-                        send(lastFailure ?: StreamEvent.Failure("All Harness gateways failed"))
+                        send(exhaustedQuotaFailure ?: lastFailure ?: StreamEvent.Failure("All Harness gateways failed"))
                         return@channelFlow
                     }
                 }
