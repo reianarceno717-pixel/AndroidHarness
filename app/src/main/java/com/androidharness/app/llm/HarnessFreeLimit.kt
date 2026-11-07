@@ -13,14 +13,19 @@ internal object HarnessFreeLimit {
     data class Notice(val kind: Kind, val retryAfterSeconds: Long? = null)
 
     fun normalize(failure: StreamEvent.Failure): StreamEvent.Failure {
-        if (failure.code != null && failure.code != 429) return failure
+        // Some Kilo quota refusals arrive as HTTP 400/402 instead of 429.
+        // Inspect the structured provider code and quota wording before
+        // treating non-429 statuses as ordinary terminal API errors.
         val quota = failure.errorCode.equals("PROMOTION_MODEL_LIMIT_REACHED", ignoreCase = true) ||
             failure.errorCode == QUOTA_CODE || quotaText.containsMatchIn(failure.message)
-        if (!quota && failure.code != 429) return failure
-        val notice = Notice(if (quota) Kind.QUOTA else Kind.TEMPORARY, failure.retryAfterSeconds)
-        return failure.copy(message = message(notice), code = 429,
-            errorCode = if (quota) QUOTA_CODE else RATE_CODE,
-            retryable = if (quota) false else failure.retryable)
+        if (quota) {
+            val notice = Notice(Kind.QUOTA, failure.retryAfterSeconds)
+            return failure.copy(message = message(notice), code = 429, errorCode = QUOTA_CODE, retryable = false)
+        }
+        if (failure.code != null && failure.code != 429) return failure
+        if (failure.code != 429) return failure
+        val notice = Notice(Kind.TEMPORARY, failure.retryAfterSeconds)
+        return failure.copy(message = message(notice), code = 429, errorCode = RATE_CODE)
     }
 
     fun message(notice: Notice): String = buildString {
