@@ -1183,4 +1183,22 @@ class SettingsRepository(private val context: Context) {
             else prefs[Keys.LAST_ACTIVE_SESSION] = sessionId
         }
     }
+
+    /**
+     * Phase 3: Ensures the persistent 3-specialist AI team is initialized once and preserved
+     * across sessions, restarts, and interfaces without duplicating or overwriting user edits.
+     */
+    suspend fun ensureSpecialistTeam() {
+        context.settingsStore.edit { prefs ->
+            val current = ChatAgentProfile.decodeList(prefs[Keys.CHAT_AGENTS])
+            val merged = PersistentSpecialistTeam.mergePreservingConfigured(
+                existing = current,
+                fallbackProviderId = prefs[Keys.ACTIVE_PROVIDER],
+                fallbackModel = prefs[Keys.ACTIVE_MODEL],
+            )
+            if (merged != current) {
+                prefs[Keys.CHAT_AGENTS] = ChatAgentProfile.encodeList(merged)
+            }
+        }
+    }
 }

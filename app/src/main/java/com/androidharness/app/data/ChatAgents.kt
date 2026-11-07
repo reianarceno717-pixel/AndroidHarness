@@ -127,3 +127,86 @@ object AgentKnowledgeSearch {
         .sortedWith(compareByDescending<Hit> { it.score }.thenBy { it.file.name }.thenBy { it.passage })
         .take(6)
 }
+
+
+/**
+ * Phase 3: Persistent AI Specialist Team shared across main Android app,
+ * floating overlay assistant, and remote browser interface.
+ * Preserves existing configured specialist members, models, roles, and instructions
+ * across sessions and restarts without duplicating agents.
+ */
+object PersistentSpecialistTeam {
+    const val LEAD_ARCHITECT_ID = "specialist-architect"
+    const val UI_GRAPHICS_ID = "specialist-ui-3d"
+    const val QA_VERIFICATION_ID = "specialist-qa-verification"
+
+    val defaultSpecialists: List<ChatAgentProfile> = listOf(
+        ChatAgentProfile(
+            id = LEAD_ARCHITECT_ID,
+            name = "Architecture & Code Lead",
+            avatar = "spark",
+            description = "System architecture, Kotlin/Android engineering, backend APIs, and multi-file refactoring.",
+            instructions = "Act as the Lead Software Architect in the persistent AndroidHarness specialist team. Design clean, modular architectures, preserve existing working systems, and coordinate multi-file changes.",
+            persona = "Precise, architectural, systems-focused senior principal engineer.",
+            capabilities = setOf(AgentCapability.WEB, AgentCapability.GITHUB, AgentCapability.IMAGES),
+            memory = AgentMemory.SHARED,
+            sharedHistory = true,
+            starters = listOf("Audit the project architecture", "Plan a multi-file feature upgrade"),
+            updatedAt = 1_700_000_000_000L,
+        ),
+        ChatAgentProfile(
+            id = UI_GRAPHICS_ID,
+            name = "UI, 3D & Experience Specialist",
+            avatar = "idea",
+            description = "Jetpack Compose UI, responsive web interfaces, Three.js/WebGL 3D scenes, and visual polish.",
+            instructions = "Act as the UI, 3D & Experience Specialist in the persistent AndroidHarness team. Deliver responsive mobile-first layouts, smooth animations, accessible touch targets, and cohesive visual hierarchy.",
+            persona = "Design-driven frontend & interactive graphics specialist.",
+            capabilities = setOf(AgentCapability.WEB, AgentCapability.IMAGES),
+            memory = AgentMemory.SHARED,
+            sharedHistory = true,
+            starters = listOf("Improve screen responsiveness", "Design an interactive component"),
+            updatedAt = 1_700_000_000_000L,
+        ),
+        ChatAgentProfile(
+            id = QA_VERIFICATION_ID,
+            name = "Testing, Quota & Reliability Specialist",
+            avatar = "research",
+            description = "Edge-case analysis, unit test coverage, API error/fallback resilience, and security auditing.",
+            instructions = "Act as the Testing, Quota & Reliability Specialist in the persistent AndroidHarness team. Verify error handling, race conditions, security boundaries, and unit test coverage before sign-off.",
+            persona = "Rigorous QA, reliability, and security verification engineer.",
+            capabilities = setOf(AgentCapability.WEB, AgentCapability.GITHUB),
+            memory = AgentMemory.SHARED,
+            sharedHistory = true,
+            starters = listOf("Verify error handling and edge cases", "Write unit tests for recent changes"),
+            updatedAt = 1_700_000_000_000L,
+        ),
+    )
+
+    /**
+     * Returns the persistent specialist team merged with any user-customized profiles.
+     * Existing configured members keep their saved models, providers, roles, and instructions
+     * without ever creating duplicates.
+     */
+    fun mergePreservingConfigured(
+        existing: List<ChatAgentProfile>,
+        fallbackProviderId: String? = null,
+        fallbackModel: String? = null,
+    ): List<ChatAgentProfile> {
+        val byId = LinkedHashMap<String, ChatAgentProfile>()
+        for (profile in existing) {
+            byId[profile.id] = profile
+        }
+        val defaultModelChoice = if (!fallbackProviderId.isNullOrBlank() && !fallbackModel.isNullOrBlank()) {
+            ChatModelChoice(fallbackProviderId, fallbackModel)
+        } else null
+        for (spec in defaultSpecialists) {
+            val saved = byId[spec.id]
+            if (saved == null) {
+                byId[spec.id] = if (defaultModelChoice != null) spec.copy(model = defaultModelChoice) else spec
+            } else if (saved.model == null && defaultModelChoice != null) {
+                byId[spec.id] = saved.copy(model = defaultModelChoice)
+            }
+        }
+        return byId.values.take(ChatAgentProfile.MAX_AGENTS)
+    }
+}
