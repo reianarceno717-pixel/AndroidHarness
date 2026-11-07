@@ -751,8 +751,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 val resultJson = runBlocking {
                                     if (requestedProviderId.isNotEmpty() || requestedModel.isNotEmpty()) {
                                         val currentPrefs = container.settings.settings.first()
-                                        val pid = requestedProviderId.ifBlank { currentPrefs.activeProviderId }
-                                        val mdl = requestedModel.ifBlank { currentPrefs.activeModel }
+                                        val pid: String = requestedProviderId.ifBlank { currentPrefs.activeProviderId ?: HarnessProvider.ID }
+                                        val mdl: String? = requestedModel.ifBlank { currentPrefs.activeModel ?: HarnessProvider.DEFAULT_MODEL }
                                         container.settings.setActiveSelection(pid, mdl)
                                     }
                                     val sid = payload.optString("sessionId").trim().takeIf { it.isNotEmpty() }

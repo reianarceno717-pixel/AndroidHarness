@@ -245,17 +245,19 @@ class AppContainer(val appContext: Context) {
     }
 
     private val cavemanSettings = AtomicReference(com.androidharness.app.data.AppSettings())
-    val skills by lazy {
-        com.androidharness.app.skills.SkillStore(
-        bundled = com.androidharness.app.skills.SkillAssets.load(appContext.assets),
+    private val bundledSkillMap by lazy {
+        com.androidharness.app.skills.SkillAssets.load(appContext.assets)
+    }
+    val skills = com.androidharness.app.skills.SkillStore(
+        bundled = emptyMap(),
         userDir = java.io.File(appContext.filesDir, "skills").apply { mkdirs() },
         projectDir = { projectSkillsDir },
         disabled = { disabledSkills.get() },
         optionalBundled = {
-            if (cavemanSettings.get().cavemanInstalled) com.androidharness.app.caveman.CavemanPolicy.skills else emptyMap()
+            val base = bundledSkillMap
+            if (cavemanSettings.get().cavemanInstalled) base + com.androidharness.app.caveman.CavemanPolicy.skills else base
         },
     )
-    }
     val browser = com.androidharness.app.browser.BrowserController(appContext, images)
     val registry = ToolRegistry.default(
         fetchClient, todoStore, backgroundProcesses, linuxEnv, shizuku, shellRouter, skills, codeGraph,
@@ -388,6 +390,7 @@ class AppContainer(val appContext: Context) {
         // renders its first frame immediately on cold start.
         val ioScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO)
         ioScope.launch {
+            bundledSkillMap
             settings.ensureSpecialistTeam()
             com.androidharness.app.llm.ModelsDev.load(appContext)
             com.androidharness.app.llm.ModelsDev.refresh(appContext)
