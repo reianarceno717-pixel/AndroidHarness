@@ -757,6 +757,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                         .put("currentAction", live.currentToolAction ?: "")
                                         .put("retryStatus", live.retryStatus ?: "")
                                         .put("streaming", !live.streamingText.isNullOrBlank())
+                                        .put("streamingText", live.streamingText.orEmpty().takeLast(12_000))
+                                        .put("streamingThinking", live.streamingThinking.orEmpty().takeLast(4_000))
                                         .put("runningCalls", JSONArray().apply {
                                             live.runningCalls.take(12).forEach { call ->
                                                 put(JSONObject().put("id", call.id).put("name", call.name))
@@ -1435,6 +1437,17 @@ function renderExecutionStatus(data) {
     line.textContent = "Tool · " + (call.name || "Working");
     host.appendChild(line);
   });
+  if (data.streamingText) {
+    const preview = document.createElement("div");
+    preview.style.cssText = "margin-top:7px;padding:8px;border:1px solid #334155;border-radius:7px;background:#0B1120;color:#E2E8F0;font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto";
+    preview.textContent = data.streamingText;
+    host.appendChild(preview);
+  } else if (data.streamingThinking) {
+    const thinking = document.createElement("div");
+    thinking.style.cssText = "margin-top:7px;color:#94A3B8;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere";
+    thinking.textContent = "Thinking · " + data.streamingThinking;
+    host.appendChild(thinking);
+  }
   specialists.forEach((specialist, index) => {
     const card = document.createElement("div");
     card.style.cssText = "margin-top:6px;padding:7px 8px;border:1px solid #334155;border-radius:7px;background:#0B1120";
