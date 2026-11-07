@@ -1118,6 +1118,7 @@ async function loadChatHistory() {
     const res = await apiFetch("/api/chat/history?sessionId=" + encodeURIComponent(bridgeSessionId));
     if (!res.ok) return;
     const data = await res.json();
+    if (data.sessionId && data.sessionId !== bridgeSessionId) return;
     chatHistory = Array.isArray(data.messages) ? data.messages : [];
     sessionStorage.setItem("androidHarnessChatHistory", JSON.stringify(chatHistory));
     const box = document.getElementById("chat-box");
@@ -1136,6 +1137,7 @@ async function loadFiles() {
   if (!bridgeSessionId) return;
   const res = await apiFetch("/api/files?sessionId=" + encodeURIComponent(bridgeSessionId));
   const data = await res.json();
+  if (data.sessionId && data.sessionId !== bridgeSessionId) return;
   const list = document.getElementById("file-list");
   list.innerHTML = "";
   if (!data.files || data.files.length === 0) {
@@ -1152,10 +1154,14 @@ async function loadFiles() {
 }
 
 async function openFile(path) {
+  const requestedSessionId = bridgeSessionId;
   activeFilePath = path;
   document.getElementById("current-file").textContent = path;
-  const res = await apiFetch("/api/file?path=" + encodeURIComponent(path) + "&sessionId=" + encodeURIComponent(bridgeSessionId));
+  const res = await apiFetch("/api/file?path=" + encodeURIComponent(path) + "&sessionId=" + encodeURIComponent(requestedSessionId));
   const data = await res.json();
+  if (requestedSessionId !== bridgeSessionId) return;
+  if (!res.ok) throw new Error(data.error || "Unable to open file");
+  if (!bridgeSessionId) return;
   document.getElementById("editor").value = data.content || "";
   loadFiles();
 }
@@ -1163,6 +1169,7 @@ async function openFile(path) {
 async function createNewFile() {
   const name = prompt("Enter file name (e.g. index.html):", "index.html");
   if (!name) return;
+  if (!bridgeSessionId) { alert("Waiting for AndroidHarness to connect."); return; }
   activeFilePath = name;
   document.getElementById("current-file").textContent = name;
   document.getElementById("editor").value = "<!doctype html>\n<html>\n<body>\n  <h1>Hello from AndroidHarness</h1>\n</body>\n</html>";
@@ -1172,11 +1179,13 @@ async function createNewFile() {
 
 async function saveCurrentFile() {
   if (!activeFilePath) { activeFilePath = "index.html"; document.getElementById("current-file").textContent = activeFilePath; }
-  await apiFetch("/api/file", {
+  const res = await apiFetch("/api/file", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ sessionId: bridgeSessionId, path: activeFilePath, content: document.getElementById("editor").value })
   });
+  const data = await res.json();
+  if (!res.ok || !data.ok) throw new Error(data.error || "Unable to save file");
   loadFiles();
 }
 
