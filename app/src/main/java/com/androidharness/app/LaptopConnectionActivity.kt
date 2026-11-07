@@ -754,6 +754,21 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                         .put("provider", selectedProvider?.name ?: "No provider selected")
                                         .put("model", selectedModel?.model ?: "No model selected")
                                         .put("permissionMode", modelState.settings.permissionMode.name)
+                                        .put("currentAction", live.currentToolAction ?: "")
+                                        .put("retryStatus", live.retryStatus ?: "")
+                                        .put("streaming", !live.streamingText.isNullOrBlank())
+                                        .put("runningCalls", JSONArray().apply {
+                                            live.runningCalls.take(12).forEach { call ->
+                                                put(JSONObject().put("id", call.id).put("name", call.name))
+                                            }
+                                        })
+                                        .put("specialists", JSONArray().apply {
+                                            live.subagentSteps.entries.take(8).forEach { (id, steps) ->
+                                                put(JSONObject().put("id", id).put("steps", JSONArray().apply {
+                                                    steps.takeLast(5).forEach { put(it.take(500)) }
+                                                }))
+                                            }
+                                        })
                                         .put("messageCount", messages.count {
                                             it.role == com.androidharness.app.core.Role.USER ||
                                                 it.role == com.androidharness.app.core.Role.ASSISTANT
@@ -1121,6 +1136,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
       <select id="provider-select" aria-label="AI provider" onchange="onRemoteProviderChanged()" style="min-width:0;flex:1;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px"></select>
       <select id="model-select" aria-label="AI model" onchange="saveRemoteModel()" style="min-width:0;flex:1.3;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px"></select>
     </div>
+    <div id="execution-status" style="display:none;padding:9px 12px;border-bottom:1px solid #1E293B;background:#111827" aria-live="polite"></div>
     <div class="chat-messages" id="chat-box">
       <div class="msg ai">Connected virtually to AndroidHarness! You can speak or chat with the AI model team and edit phone workspace files right from this browser without installing anything.</div>
     </div>
@@ -1390,6 +1406,52 @@ async function submitRemoteDecision(endpoint, payload) {
     if (host) host.querySelectorAll("button,input,textarea").forEach(el => { el.disabled = false; });
   }
 }
+function renderExecutionStatus(data) {
+  const host = document.getElementById("execution-status");
+  if (!host) return;
+  host.replaceChildren();
+  const active = !!data.busy;
+  const specialists = Array.isArray(data.specialists) ? data.specialists : [];
+  const calls = Array.isArray(data.runningCalls) ? data.runningCalls : [];
+  const action = data.retryStatus || data.currentAction || (calls.length ? "Running " + calls.length + " tool action(s)" : "");
+  if (!active && !specialists.length && !action) {
+    host.style.display = "none";
+    return;
+  }
+  host.style.display = "block";
+  const heading = document.createElement("div");
+  heading.style.cssText = "font-size:12px;font-weight:700;color:#7DD3FC;margin-bottom:6px";
+  heading.textContent = data.retryStatus ? "AI team · " + data.retryStatus : active ? "AI team · Working" : "AI team · Recent activity";
+  host.appendChild(heading);
+  if (action && !data.retryStatus) {
+    const line = document.createElement("div");
+    line.style.cssText = "font-size:12px;color:#CBD5E1;margin-bottom:5px";
+    line.textContent = action;
+    host.appendChild(line);
+  }
+  calls.forEach(call => {
+    const line = document.createElement("div");
+    line.style.cssText = "font-size:11px;color:#A5B4FC;margin:3px 0";
+    line.textContent = "Tool · " + (call.name || "Working");
+    host.appendChild(line);
+  });
+  specialists.forEach((specialist, index) => {
+    const card = document.createElement("div");
+    card.style.cssText = "margin-top:6px;padding:7px 8px;border:1px solid #334155;border-radius:7px;background:#0B1120";
+    const name = document.createElement("div");
+    name.style.cssText = "font-size:11px;font-weight:650;color:#E2E8F0";
+    name.textContent = "Specialist " + (index + 1);
+    card.appendChild(name);
+    const steps = Array.isArray(specialist.steps) ? specialist.steps : [];
+    steps.forEach(step => {
+      const detail = document.createElement("div");
+      detail.style.cssText = "font-size:11px;color:#94A3B8;margin-top:3px;white-space:pre-wrap;overflow-wrap:anywhere";
+      detail.textContent = step;
+      card.appendChild(detail);
+    });
+    host.appendChild(card);
+  });
+}
 function renderPendingControls(data) {
   const host = document.getElementById("pending-controls");
   if (!host) return;
@@ -1492,6 +1554,7 @@ async function refreshBridgeStatus() {
     if (data.sessionId && data.sessionId !== bridgeSessionId) {
       resetRemoteChatForSession(data.sessionId);
     }
+    renderExecutionStatus(data);
     renderPendingControls(data);
     const sendButton = document.querySelector(".chat-input button:last-child");
     if (sendButton && !chatRequestInFlight) sendButton.disabled = bridgeAssistantBusy;
