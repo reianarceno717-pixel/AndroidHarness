@@ -648,6 +648,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                                 it.role == com.androidharness.app.core.Role.ASSISTANT
                                         })
                                         .put("sessionId", sessionId)
+                                        .put("sessionTitle", container.sessions.session(sessionId)?.title ?: "Active chat")
                                     val turnId = live.turnId
                                     live.pendingApproval?.let { pending ->
                                         if (turnId != null) {
@@ -1026,6 +1027,12 @@ function resetRemoteChatForSession(sessionId) {
   chatHistory = [];
   sessionStorage.setItem("androidHarnessChatHistory", "[]");
   clearPendingControls();
+  activeFilePath = "";
+  const editor = document.getElementById("editor");
+  if (editor) editor.value = "";
+  const currentFile = document.getElementById("current-file");
+  if (currentFile) currentFile.textContent = "Select or create file";
+  if (typeof loadFiles === "function") loadFiles().catch(() => {});
   const box = document.getElementById("chat-box");
   if (box) {
     box.replaceChildren();
@@ -1273,9 +1280,10 @@ async function refreshBridgeStatus() {
     renderPendingControls(data);
     const sendButton = document.querySelector(".chat-input button:last-child");
     if (sendButton && !chatRequestInFlight) sendButton.disabled = bridgeAssistantBusy;
+    const activeTitle = data.sessionTitle || "Active chat";
     label.textContent = bridgeAssistantBusy
-      ? "AndroidHarness · Assistant responding · " + data.messageCount + " messages"
-      : "AndroidHarness · Connected · " + data.messageCount + " messages";
+      ? "AndroidHarness · " + activeTitle + " · Assistant responding"
+      : "AndroidHarness · " + activeTitle + " · Connected";
     await refreshSharedChatHistory();
   } catch (_) {
     label.textContent = "AndroidHarness · Connection status unavailable";
