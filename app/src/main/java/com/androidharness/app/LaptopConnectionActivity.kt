@@ -596,7 +596,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     val sessionId = getOrCreateRemoteSession(app)
                                     val container = app.container
                                     val messages = container.sessions.messages(sessionId)
-                                    JSONObject()
+                                    val live = container.runManager.live(sessionId).value
+                                    val statusJson = JSONObject()
                                         .put("ok", true)
                                         .put("busy", bridgeChatBusy.get() || container.runManager.isRunning(sessionId))
                                         .put("messageCount", messages.count {
@@ -604,12 +605,102 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                                 it.role == com.androidharness.app.core.Role.ASSISTANT
                                         })
                                         .put("sessionId", sessionId)
+                                    val turnId = live.turnId
+                                    live.pendingApproval?.let { pending ->
+                                        if (turnId != null) {
+                                            statusJson.put("pendingApproval", JSONObject()
+                                                .put("turnId", turnId)
+                                                .put("callId", pending.call.id)
+                                                .put("fingerprint", com.androidharness.app.agent.RemotePromptIdentity.approval(pending))
+                                                .put("tool", pending.call.name)
+                                                .put("description", pending.toolDescription)
+                                                .put("arguments", pending.call.argumentsJson)
+                                                .put("diffPreview", pending.diffPreview))
+                                        }
+                                    }
+                                    live.pendingQuestion?.let { pending ->
+                                        if (turnId != null) {
+                                            statusJson.put("pendingQuestion", JSONObject()
+                                                .put("turnId", turnId)
+                                                .put("callId", pending.callId)
+                                                .put("fingerprint", com.androidharness.app.agent.RemotePromptIdentity.question(pending))
+                                                .put("question", pending.question)
+                                                .put("options", JSONArray().apply { pending.options.forEach(::put) })
+                                                .put("multiSelect", pending.multiSelect))
+                                        }
+                                    }
+                                    statusJson
                                 }
                             }.getOrElse {
                                 JSONObject().put("ok", false).put("error", it.message ?: "Unable to read remote chat status")
                             }
                             writeHttpResponse(sock, if (status.optBoolean("ok")) 200 else 500,
                                 "application/json; charset=utf-8", status.toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/chat/approval" -> {
+                        val payload = try {
+                            JSONObject(body.ifBlank { "{}" })
+                        } catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val turnId = payload.optString("turnId").trim()
+                        val callId = payload.optString("callId").trim()
+                        val fingerprint = payload.optString("fingerprint").trim()
+                        if (turnId.isEmpty() || callId.isEmpty() || fingerprint.isEmpty() || !payload.has("allow") || payload.opt("allow") !is Boolean) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"turnId, callId, fingerprint, and a boolean allow value are required"}""")
+                            return
+                        }
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                            return
+                        }
+                        val sessionId = runCatching { runBlocking { getOrCreateRemoteSession(app) } }.getOrNull()
+                        val accepted = sessionId?.let {
+                            app.container.runManager.respondToRemoteApproval(
+                                it, turnId, callId, payload.getBoolean("allow"), fingerprint,
+                            )
+                        } == true
+                        if (accepted) {
+                            writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
+                        } else {
+                            writeHttpResponse(sock, 409, "application/json; charset=utf-8", """{"ok":false,"error":"This approval is no longer pending. Refresh the session and review the current request."}""")
+                        }
+                    }
+                    method == "POST" && path == "/api/chat/question" -> {
+                        val payload = try {
+                            JSONObject(body.ifBlank { "{}" })
+                        } catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val turnId = payload.optString("turnId").trim()
+                        val callId = payload.optString("callId").trim()
+                        val fingerprint = payload.optString("fingerprint").trim()
+                        val answer = payload.optString("answer")
+                        if (turnId.isEmpty() || callId.isEmpty() || fingerprint.isEmpty() || answer.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"turnId, callId, fingerprint, and a non-empty answer are required"}""")
+                            return
+                        }
+                        if (answer.length > 8_000) {
+                            writeHttpResponse(sock, 413, "application/json; charset=utf-8", """{"error":"Answer exceeds the 8,000 character limit"}""")
+                            return
+                        }
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                            return
+                        }
+                        val sessionId = runCatching { runBlocking { getOrCreateRemoteSession(app) } }.getOrNull()
+                        val accepted = sessionId?.let {
+                            app.container.runManager.respondToRemoteQuestion(it, turnId, callId, answer, fingerprint)
+                        } == true
+                        if (accepted) {
+                            writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
+                        } else {
+                            writeHttpResponse(sock, 409, "application/json; charset=utf-8", """{"ok":false,"error":"This question is no longer pending. Refresh the session and review the current request."}""")
                         }
                     }
                     method == "GET" && path == "/api/chat/history" -> {
@@ -805,6 +896,17 @@ class LaptopConnectionActivity : AppCompatActivity() {
   button:hover { background: #1D4ED8; }
   .btn-secondary { background: #334155; }
   .btn-secondary:hover { background: #475569; }
+  .decision-card { margin: 0 12px 10px; padding: 12px; border: 1px solid #D97706; border-radius: 10px; background: #1C1917; color: #F8FAFC; }
+  .decision-title { font-size: 13px; font-weight: 700; color: #FBBF24; margin-bottom: 7px; }
+  .decision-copy { font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: #E2E8F0; }
+  .decision-details { margin-top: 8px; font-size: 11px; color: #CBD5E1; }
+  .decision-details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; background: #0B1120; padding: 8px; border-radius: 6px; }
+  .decision-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .decision-actions button { flex: 1; min-width: 90px; }
+  .decision-options { display: grid; gap: 7px; margin-top: 10px; font-size: 12px; }
+  .decision-options label { display: flex; gap: 8px; align-items: flex-start; }
+  .decision-options input { flex: 0 0 auto; margin-top: 2px; }
+  .decision-answer { width: 100%; min-height: 70px; margin-top: 10px; resize: vertical; background: #0B1120; color: #F8FAFC; border: 1px solid #475569; border-radius: 6px; padding: 9px; font: inherit; }
   @media (max-width: 768px) {
     header { padding: 8px 12px; }
     .meta { display: none; }
@@ -843,6 +945,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
     <div class="chat-messages" id="chat-box">
       <div class="msg ai">Connected virtually to AndroidHarness! You can speak or chat with the AI model team and edit phone workspace files right from this browser without installing anything.</div>
     </div>
+    <div id="pending-controls" aria-live="polite"></div>
     <div class="chat-input">
       <button class="btn-secondary" id="voice-btn" style="padding:8px 10px" onclick="toggleVoice()" title="Speak with microphone">🎙️</button>
       <input id="prompt-input" placeholder="Ask AI team or edit workspace..." onkeydown="if(event.key==='Enter')sendPrompt()" />
@@ -973,6 +1076,121 @@ async function saveCurrentFile() {
 
 let bridgeRefreshInFlight = false;
 let bridgeAssistantBusy = false;
+let pendingControlKey = "";
+function clearPendingControls() {
+  const host = document.getElementById("pending-controls");
+  if (host) host.replaceChildren();
+  pendingControlKey = "";
+}
+async function submitRemoteDecision(endpoint, payload) {
+  const host = document.getElementById("pending-controls");
+  if (host) host.querySelectorAll("button,input,textarea").forEach(el => { el.disabled = true; });
+  try {
+    const res = await apiFetch(endpoint, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "The response could not be submitted.");
+    clearPendingControls();
+    await refreshBridgeStatus();
+  } catch (error) {
+    const label = document.getElementById("status-meta");
+    if (label) label.textContent = "Decision not submitted · " + error.message;
+    if (host) host.querySelectorAll("button,input,textarea").forEach(el => { el.disabled = false; });
+  }
+}
+function renderPendingControls(data) {
+  const host = document.getElementById("pending-controls");
+  if (!host) return;
+  const approval = data.pendingApproval || null;
+  const question = data.pendingQuestion || null;
+  const pending = approval ? ["approval", approval] : question ? ["question", question] : null;
+  if (!pending) { clearPendingControls(); return; }
+  const kind = pending[0], item = pending[1];
+  const key = kind + ":" + item.fingerprint + ":" + item.callId;
+  if (key === pendingControlKey) return;
+  pendingControlKey = key;
+  host.replaceChildren();
+  const card = document.createElement("div");
+  card.className = "decision-card";
+  const title = document.createElement("div");
+  title.className = "decision-title";
+  title.textContent = kind === "approval" ? "Approval required" : "Your answer is needed";
+  card.appendChild(title);
+  const copy = document.createElement("div");
+  copy.className = "decision-copy";
+  copy.textContent = kind === "approval"
+    ? (item.description || ("AndroidHarness wants to run " + item.tool))
+    : (item.question || "The assistant needs more information.");
+  card.appendChild(copy);
+  if (kind === "approval") {
+    const details = document.createElement("details");
+    details.className = "decision-details";
+    const summary = document.createElement("summary");
+    summary.textContent = "Review tool and arguments";
+    const pre = document.createElement("pre");
+    pre.textContent = (item.tool || "Tool") + "\n" + (item.arguments || "");
+    if (item.diffPreview) pre.textContent += "\n\nProposed changes:\n" + item.diffPreview;
+    details.append(summary, pre);
+    card.appendChild(details);
+    const actions = document.createElement("div");
+    actions.className = "decision-actions";
+    const deny = document.createElement("button");
+    deny.className = "btn-secondary";
+    deny.textContent = "Deny";
+    deny.onclick = () => submitRemoteDecision("/api/chat/approval", {
+      turnId: item.turnId, callId: item.callId, fingerprint: item.fingerprint, allow: false
+    });
+    const allow = document.createElement("button");
+    allow.textContent = "Approve";
+    allow.onclick = () => submitRemoteDecision("/api/chat/approval", {
+      turnId: item.turnId, callId: item.callId, fingerprint: item.fingerprint, allow: true
+    });
+    actions.append(deny, allow);
+    card.appendChild(actions);
+  } else {
+    const options = Array.isArray(item.options) ? item.options : [];
+    if (options.length) {
+      const list = document.createElement("div");
+      list.className = "decision-options";
+      options.forEach((option, index) => {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = item.multiSelect ? "checkbox" : "radio";
+        input.name = "remote-question-option";
+        input.value = option;
+        const text = document.createElement("span");
+        text.textContent = option;
+        label.append(input, text);
+        list.appendChild(label);
+      });
+      card.appendChild(list);
+    }
+    const answer = document.createElement("textarea");
+    answer.className = "decision-answer";
+    answer.placeholder = options.length ? "Or add details / explain your choice…" : "Type your answer…";
+    answer.maxLength = 8000;
+    card.appendChild(answer);
+    const actions = document.createElement("div");
+    actions.className = "decision-actions";
+    const send = document.createElement("button");
+    send.textContent = "Submit answer";
+    send.onclick = () => {
+      const selected = Array.from(card.querySelectorAll(".decision-options input:checked")).map(el => el.value);
+      const typed = answer.value.trim();
+      const response = [selected.join(item.multiSelect ? ", " : ""), typed].filter(Boolean).join("\n");
+      if (!response) { answer.focus(); return; }
+      submitRemoteDecision("/api/chat/question", {
+        turnId: item.turnId, callId: item.callId, fingerprint: item.fingerprint, answer: response
+      });
+    };
+    actions.appendChild(send);
+    card.appendChild(actions);
+  }
+  host.appendChild(card);
+}
 async function refreshBridgeStatus() {
   const label = document.getElementById("status-meta");
   if (!label || !sessionToken || bridgeRefreshInFlight) return;
@@ -982,6 +1200,7 @@ async function refreshBridgeStatus() {
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || "Status unavailable");
     bridgeAssistantBusy = !!data.busy;
+    renderPendingControls(data);
     const sendButton = document.querySelector(".chat-input button:last-child");
     if (sendButton && !chatRequestInFlight) sendButton.disabled = bridgeAssistantBusy;
     label.textContent = bridgeAssistantBusy
