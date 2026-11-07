@@ -658,9 +658,17 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     val container = app.container
                                     val messages = container.sessions.messages(sessionId)
                                     val live = container.runManager.live(sessionId).value
+                                    val modelState = container.chatModels.observe(sessionId).first()
+                                    val selectedModel = modelState.selection.active
+                                    val selectedProvider = selectedModel?.let { choice ->
+                                        modelState.providers.firstOrNull { it.id == choice.providerId }
+                                    }
                                     val statusJson = JSONObject()
                                         .put("ok", true)
                                         .put("busy", container.runManager.isRunning(sessionId))
+                                        .put("provider", selectedProvider?.name ?: "No provider selected")
+                                        .put("model", selectedModel?.model ?: "No model selected")
+                                        .put("permissionMode", modelState.settings.permissionMode.name)
                                         .put("messageCount", messages.count {
                                             it.role == com.androidharness.app.core.Role.USER ||
                                                 it.role == com.androidharness.app.core.Role.ASSISTANT
@@ -1322,9 +1330,11 @@ async function refreshBridgeStatus() {
     const sendButton = document.querySelector(".chat-input button:last-child");
     if (sendButton && !chatRequestInFlight) sendButton.disabled = bridgeAssistantBusy;
     const activeTitle = data.sessionTitle || "Active chat";
+    const modelTag = document.getElementById("model-tag");
+    if (modelTag) modelTag.textContent = (data.provider || "Provider unavailable") + " · " + (data.model || "Model unavailable");
     label.textContent = bridgeAssistantBusy
       ? "AndroidHarness · " + activeTitle + " · Assistant responding"
-      : "AndroidHarness · " + activeTitle + " · Connected";
+      : "AndroidHarness · " + activeTitle + " · " + (data.permissionMode || "Connected");
     await refreshSharedChatHistory();
   } catch (_) {
     label.textContent = "AndroidHarness · Connection status unavailable";
