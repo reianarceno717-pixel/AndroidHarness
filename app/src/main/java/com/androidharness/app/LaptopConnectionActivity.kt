@@ -1282,7 +1282,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   .mobile-tabs { display: none; background: #0F172A; border-bottom: 1px solid #1E293B; }
   .tab-btn { flex: 1; padding: 10px 4px; font-size: 12px; background: transparent; color: #94A3B8; border: none; border-bottom: 2px solid transparent; cursor: pointer; text-align: center; font-weight: 500; }
   .tab-btn.active { color: #38BDF8; border-bottom-color: #38BDF8; font-weight: 700; }
-  main { flex: 1; display: grid; grid-template-columns: 260px 1fr 400px; min-height: 0; }
+  main { flex: 1; display: grid; grid-template-columns: 220px minmax(240px,1fr) minmax(320px,400px) 360px; min-height: 0; }
   .panel { border-right: 1px solid #1E293B; display: flex; flex-direction: column; min-height: 0; }
   .panel-header { padding: 9px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94A3B8; border-bottom: 1px solid #1E293B; display: flex; justify-content: space-between; align-items: center; }
   .file-list { flex: 1; overflow-y: auto; padding: 8px; }
@@ -1339,6 +1339,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <button class="tab-btn active" id="btn-tab-chat" onclick="switchMobileTab('chat')">💬 Chat &amp; Voice</button>
   <button class="tab-btn" id="btn-tab-files" onclick="switchMobileTab('files')">📁 Files</button>
   <button class="tab-btn" id="btn-tab-editor" onclick="switchMobileTab('editor')">📝 Editor</button>
+  <button class="tab-btn" id="btn-tab-terminal" data-tab="terminal" onclick="switchMobileTab(this.dataset.tab)">⌘ Terminal</button>
 </nav>
 <main>
   <section class="panel" id="panel-files">
@@ -1348,6 +1349,16 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <section class="panel editor-wrap" id="panel-editor">
     <div class="panel-header"><span id="current-file">Select or create file</span><button onclick="saveCurrentFile()">Save</button></div>
     <textarea id="editor" placeholder="Select a workspace file or ask the AI to code..."></textarea>
+  </section>
+  <section class="panel" id="panel-terminal" style="border-right:none">
+    <div class="panel-header"><span>Phone Terminal</span><span id="terminal-meta">Connecting…</span></div>
+    <div id="terminal-cwd" style="padding:7px 10px;color:#94A3B8;font:11px monospace">Workspace shell</div>
+    <pre id="terminal-output" style="flex:1;min-height:0;overflow:auto;margin:0;padding:10px;background:#050914;color:#D1FAE5;font:12px/1.5 monospace;white-space:pre-wrap;overflow-wrap:anywhere">Terminal output will appear here.</pre>
+    <div style="padding:8px;border-top:1px solid #1E293B;background:#0F172A">
+      <textarea id="terminal-command" rows="3" maxlength="8000" placeholder="Run a command on the phone workspace…" style="width:100%;resize:vertical;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:9px;font:12px monospace"></textarea>
+      <button id="terminal-run" onclick="sendRemoteTerminalCommand()" style="width:100%;margin-top:7px">Run command</button>
+      <div style="font-size:10px;color:#94A3B8;margin-top:6px">Runs on the phone using AndroidHarness configured shell and access tier. Shared with native terminal.</div>
+    </div>
   </section>
   <section class="panel tab-active" id="panel-chat" style="border-right:none">
     <div class="panel-header">
@@ -1532,6 +1543,45 @@ function resetRemoteChatForSession(sessionId) {
 let autoVoiceRead = true;
 let isRecognizing = false;
 
+let terminalRefreshInFlight = false;
+let terminalCommandInFlight = false;
+let lastTerminalSnapshot = "";
+async function refreshRemoteTerminal() {
+  if (!bridgeSessionId || terminalRefreshInFlight || !sessionToken) return;
+  terminalRefreshInFlight = true;
+  try {
+    const requestedSessionId = bridgeSessionId;
+    const res = await apiFetch("/api/terminal/status?sessionId=" + encodeURIComponent(requestedSessionId));
+    const data = await res.json();
+    if (!res.ok || !data.ok || requestedSessionId !== bridgeSessionId) throw new Error(data.error || "Terminal unavailable");
+    const output = document.getElementById("terminal-output");
+    const snapshot = Array.isArray(data.lines) ? data.lines.join("\n") : "";
+    if (snapshot !== lastTerminalSnapshot) {
+      const nearBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 80;
+      output.textContent = snapshot || "Terminal ready. Enter a command below.";
+      if (nearBottom) output.scrollTop = output.scrollHeight;
+      lastTerminalSnapshot = snapshot;
+    }
+    document.getElementById("terminal-cwd").textContent = data.cwd || "Workspace shell";
+    document.getElementById("terminal-meta").textContent = (data.busy ? "Running" : data.started ? "Ready" : "Idle") + " · " + (data.backend || "Normal") + (data.lastExitCode === null ? "" : " · exit " + data.lastExitCode);
+    document.getElementById("terminal-run").disabled = !!data.busy || !!data.stopping || terminalCommandInFlight;
+  } catch (error) { document.getElementById("terminal-meta").textContent = error.message || "Terminal unavailable"; }
+  finally { terminalRefreshInFlight = false; }
+}
+async function sendRemoteTerminalCommand() {
+  const input = document.getElementById("terminal-command");
+  const command = input.value.trimEnd();
+  if (!command || terminalCommandInFlight || !bridgeSessionId) return;
+  terminalCommandInFlight = true;
+  document.getElementById("terminal-run").disabled = true;
+  try {
+    const res = await apiFetch("/api/terminal/command", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({sessionId: bridgeSessionId, command}) });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Command was not accepted");
+    input.value = "";
+  } catch (error) { document.getElementById("terminal-meta").textContent = error.message || "Command failed"; }
+  finally { terminalCommandInFlight = false; await refreshRemoteTerminal(); }
+}
 function switchMobileTab(tab) {
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
   document.querySelectorAll(".panel").forEach(p => p.classList.remove("tab-active"));
@@ -1904,7 +1954,8 @@ async function loadRemoteSessions() {
 async function switchRemoteSession(sessionId) {
   if (!sessionId || sessionId === bridgeSessionId) return;
   resetRemoteChatForSession(sessionId);
-  await Promise.all([loadRemoteModels(), loadChatHistory()]);
+  lastTerminalSnapshot = "";
+  await Promise.all([loadRemoteModels(), loadChatHistory(), refreshRemoteTerminal()]);
   await refreshBridgeStatus();
   await loadFiles();
 }
@@ -2024,10 +2075,12 @@ async function sendPrompt() {
 }
 loadFiles();
 loadChatHistory();
+refreshRemoteTerminal();
 refreshBridgeStatus().then(async () => {
   await Promise.all([loadRemoteSessions(), loadRemoteProjects()]);
 });
 setInterval(refreshBridgeStatus, 5000);
+setInterval(refreshRemoteTerminal, 1800);
 </script></body></html>"""
     }
 }
