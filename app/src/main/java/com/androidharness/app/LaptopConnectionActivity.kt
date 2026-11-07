@@ -677,8 +677,14 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                             .put("model", provider.model).put("models", modelsJson))
                                     }
                                     val active = state.selection.active
+                                    val permissionModes = JSONArray().apply {
+                                        com.androidharness.app.agent.PermissionMode.values().forEach { mode ->
+                                            put(JSONObject().put("id", mode.name).put("label", mode.label))
+                                        }
+                                    }
                                     JSONObject().put("ok", true).put("sessionId", sessionId).put("providers", providersJson)
                                         .put("selectedProviderId", active?.providerId ?: "").put("selectedModel", active?.model ?: "")
+                                        .put("permissionMode", state.settings.permissionMode.name).put("permissionModes", permissionModes)
                                 }
                             }
                             if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
@@ -730,6 +736,42 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
                             else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
                                 JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to change model").toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/permission" -> {
+                        val payload = try {
+                            JSONObject(body.ifBlank { "{}" })
+                        } catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val sessionId = payload.optString("sessionId").trim()
+                        val requestedMode = payload.optString("mode").trim()
+                        if (sessionId.isBlank() || requestedMode.isBlank()) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A session and permission mode are required"}""")
+                            return
+                        }
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val container = app.container
+                                    check(getOrCreateRemoteSession(app) == sessionId) {
+                                        "The active AndroidHarness chat changed. Refresh the remote view."
+                                    }
+                                    val mode = com.androidharness.app.agent.PermissionMode.values()
+                                        .firstOrNull { it.name == requestedMode }
+                                        ?: error("Unknown permission mode.")
+                                    container.settings.setPermissionMode(mode)
+                                    JSONObject().put("ok", true).put("sessionId", sessionId)
+                                        .put("permissionMode", mode.name).put("label", mode.label)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to change permission mode").toString())
                         }
                     }
                     method == "GET" && path == "/api/chat/status" -> {
@@ -1137,6 +1179,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
     <div class="model-controls" style="display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid #1E293B;background:#0F172A">
       <select id="provider-select" aria-label="AI provider" onchange="onRemoteProviderChanged()" style="min-width:0;flex:1;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px"></select>
       <select id="model-select" aria-label="AI model" onchange="saveRemoteModel()" style="min-width:0;flex:1.3;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px"></select>
+      <select id="permission-select" aria-label="Tool permission mode" onchange="saveRemotePermissionMode()" style="min-width:0;flex:1;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px"></select>
     </div>
     <div id="execution-status" style="display:none;padding:9px 12px;border-bottom:1px solid #1E293B;background:#111827" aria-live="polite"></div>
     <div class="chat-messages" id="chat-box">
@@ -1165,6 +1208,8 @@ async function apiFetch(url, options = {}) {
 let activeFilePath = "";
 let chatHistory = [];
 let remoteProviders = [];
+let remotePermissionModes = [];
+let permissionSaveInFlight = false;
 let modelSaveInFlight = false;
 let bridgeSessionId = sessionStorage.getItem("androidHarnessBridgeSessionId") || "";
 function fillModelSelect(providerId, selectedModel) {
@@ -1191,6 +1236,17 @@ async function loadRemoteModels() {
     const data = await res.json();
     if (!res.ok || requestedSessionId !== bridgeSessionId) return;
     remoteProviders = Array.isArray(data.providers) ? data.providers : [];
+    remotePermissionModes = Array.isArray(data.permissionModes) ? data.permissionModes : [];
+    const permissionSelect = document.getElementById("permission-select");
+    permissionSelect.replaceChildren();
+    remotePermissionModes.forEach(mode => {
+      const option = document.createElement("option");
+      option.value = mode.id;
+      option.textContent = mode.label || mode.id;
+      permissionSelect.appendChild(option);
+    });
+    permissionSelect.value = data.permissionMode || "";
+    permissionSelect.disabled = permissionSaveInFlight || remotePermissionModes.length === 0;
     const providerSelect = document.getElementById("provider-select");
     providerSelect.replaceChildren();
     remoteProviders.forEach(provider => {
@@ -1206,6 +1262,32 @@ async function loadRemoteModels() {
       ? selected.name + " · " + (data.selectedModel || selected.model) : "No model selected";
     providerSelect.disabled = remoteProviders.length === 0;
   } catch (_) { /* Keep last valid model selection during brief disconnects. */ }
+}
+async function saveRemotePermissionMode() {
+  if (!bridgeSessionId || permissionSaveInFlight) return;
+  const select = document.getElementById("permission-select");
+  const requestedMode = select.value;
+  if (!requestedMode) return;
+  permissionSaveInFlight = true;
+  select.disabled = true;
+  try {
+    const res = await apiFetch("/api/permission", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({sessionId: bridgeSessionId, mode: requestedMode})
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) throw new Error(data.error || "Unable to change permission mode");
+    select.value = data.permissionMode;
+  } catch (error) {
+    await loadRemoteModels();
+    const status = document.getElementById("execution-status");
+    status.style.display = "block";
+    status.textContent = "Permission setting not changed: " + error.message;
+  } finally {
+    permissionSaveInFlight = false;
+    select.disabled = remotePermissionModes.length === 0;
+  }
 }
 async function onRemoteProviderChanged() {
   const provider = remoteProviders.find(item => item.id === document.getElementById("provider-select").value);
@@ -1248,6 +1330,8 @@ function resetRemoteChatForSession(sessionId) {
   remoteProviders = [];
   document.getElementById("provider-select").replaceChildren();
   document.getElementById("model-select").replaceChildren();
+  document.getElementById("permission-select").replaceChildren();
+  remotePermissionModes = [];
   document.getElementById("model-tag").textContent = "Loading model…";
   activeFilePath = "";
   const editor = document.getElementById("editor");
