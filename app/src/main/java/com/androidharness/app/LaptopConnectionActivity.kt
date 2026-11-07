@@ -642,7 +642,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     val live = container.runManager.live(sessionId).value
                                     val statusJson = JSONObject()
                                         .put("ok", true)
-                                        .put("busy", bridgeChatBusy.get() || container.runManager.isRunning(sessionId))
+                                        .put("busy", container.runManager.isRunning(sessionId))
                                         .put("messageCount", messages.count {
                                             it.role == com.androidharness.app.core.Role.USER ||
                                                 it.role == com.androidharness.app.core.Role.ASSISTANT
