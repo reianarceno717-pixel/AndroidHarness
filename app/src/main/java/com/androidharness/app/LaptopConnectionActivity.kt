@@ -18,8 +18,6 @@ import com.androidharness.app.data.ConversationConfig
 import com.androidharness.app.data.ConversationKind
 import com.androidharness.app.llm.effectiveApiKey
 import com.androidharness.app.llm.HarnessProvider
-import com.androidharness.app.llm.RequestOptions
-import com.androidharness.app.llm.StreamEvent
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
@@ -357,7 +355,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
         private fun handleClient(client: Socket, workspaceDir: File) {
             client.use { sock ->
-                sock.soTimeout = 60_000
+                sock.soTimeout = 150_000
                 val input = sock.getInputStream()
                 var httpLineTooLong = false
                 fun readHttpLine(): String? {
@@ -732,38 +730,6 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             bridgeChatBusy.set(false)
                         }
                     }
-                    else -> {}
-                                    }
-                                }
-                            }
-                            val answer = if (reply.isNotEmpty()) reply.toString() else (errorMsg ?: "No response")
-                            val responseHistory = synchronized(chatHistoryLock) {
-                                val latest = runCatching {
-                                    if (historyFile.isFile) JSONArray(historyFile.readText()) else JSONArray()
-                                }.getOrDefault(JSONArray())
-                                if (reply.isNotEmpty()) {
-                                    latest.put(JSONObject().put("role", "assistant").put("content", answer))
-                                    while (latest.length() > 40) latest.remove(0)
-                                    val temp = File(historyFile.parentFile, historyFile.name + ".next")
-                                    temp.writeText(latest.toString())
-                                    if (!temp.renameTo(historyFile)) {
-                                        temp.delete()
-                                        historyFile.writeText(latest.toString())
-                                    }
-                                }
-                                latest
-                            }
-                            val replyPayload = JSONObject()
-                                .put("ok", errorMsg == null || reply.isNotEmpty())
-                                .put("model", activeModel)
-                                .put("thinking", thoughts.toString())
-                                .put("reply", answer)
-                                .put("messages", responseHistory)
-                            writeHttpResponse(sock, if (replyPayload.optBoolean("ok")) 200 else 502, "application/json; charset=utf-8", replyPayload.toString())
-                        } finally {
-                            bridgeChatBusy.set(false)
-                        }
-                    }
                     else -> {
                         if (path.startsWith("/api/")) {
                             writeHttpResponse(sock, 404, "application/json; charset=utf-8", """{"error":"API endpoint not found"}""")
@@ -787,6 +753,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 413 -> "Payload Too Large"
                 502 -> "Bad Gateway"
                 503 -> "Service Unavailable"
+                504 -> "Gateway Timeout"
                 else -> "Error"
             }
             val headers = "HTTP/1.1 $status $statusText\r\n" +
