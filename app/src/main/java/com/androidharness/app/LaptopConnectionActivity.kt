@@ -1154,7 +1154,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     if (packageFile?.exists == true && packageFile.length <= 1_000_000) {
                                         val scripts = runCatching { com.androidharness.app.core.ProjectLaunch.scripts(packageFile.readText()) }.getOrDefault(emptyList())
                                         scripts.filter { it !in setOf("dev", "start", "preview") }.forEach { script ->
-                                            allowed += "npm $script" to com.androidharness.app.core.ProjectLaunch.npmCommand(script)
+                                            allowed.add("npm $script" to com.androidharness.app.core.ProjectLaunch.npmCommand(script))
                                         }
                                     }
                                     check(allowed.any { it.first == requestedName && it.second == requestedCommand }) {
