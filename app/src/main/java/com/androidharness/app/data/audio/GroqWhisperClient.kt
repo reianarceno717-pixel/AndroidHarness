@@ -23,6 +23,7 @@ import okhttp3.Response
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -125,44 +126,40 @@ object GroqWhisperClient {
     /** Keep cancellation attached until the response body has also finished reading. */
     private suspend fun executeText(client: OkHttpClient, request: Request): TextResponse = suspendCancellableCoroutine { continuation ->
         val call = client.newCall(request)
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        var response: Response? = null
+        // Cancellation and OkHttp callbacks can run on different threads. Keep the
+        // response reference atomic so cancellation cannot miss a just-arrived body.
+        val activeResponse = AtomicReference<Response?>(null)
 
         continuation.invokeOnCancellation {
-            scope.cancel(CancellationException("Cancelled while reading Groq response"))
-            response?.body?.close()
-            response?.close()
             call.cancel()
+            activeResponse.getAndSet(null)?.close()
         }
 
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, error: IOException) {
-                if (continuation.isActive) continuation.resumeWithException(error)
+                if (continuation.isActive) {
+                    runCatching { continuation.resumeWithException(error) }
+                }
             }
 
             override fun onResponse(call: Call, responseValue: Response) {
-                response = responseValue
+                activeResponse.set(responseValue)
                 if (!continuation.isActive) {
-                    responseValue.close()
+                    activeResponse.getAndSet(null)?.close()
                     return
                 }
 
-                val body = responseValue.body ?: run {
-                    if (continuation.isActive) continuation.resume(TextResponse(responseValue.code, ""))
-                    return
-                }
-
-                scope.launch {
-                    try {
-                        val text = body.string()
-                        if (continuation.isActive) continuation.resume(TextResponse(responseValue.code, text))
-                    } catch (error: IOException) {
-                        if (continuation.isActive) continuation.resumeWithException(error)
-                    } catch (error: CancellationException) {
-                        if (continuation.isActive) continuation.resumeWithException(error)
-                    } finally {
-                        responseValue.close()
+                try {
+                    val text = responseValue.body?.string().orEmpty()
+                    if (continuation.isActive) {
+                        runCatching { continuation.resume(TextResponse(responseValue.code, text)) }
                     }
+                } catch (error: IOException) {
+                    if (continuation.isActive) {
+                        runCatching { continuation.resumeWithException(error) }
+                    }
+                } finally {
+                    activeResponse.getAndSet(null)?.close()
                 }
             }
         })
