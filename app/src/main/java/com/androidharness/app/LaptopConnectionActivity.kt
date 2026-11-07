@@ -1482,6 +1482,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
     <div class="panel-header"><span>Build &amp; Test</span><span id="buildtest-status">Loading…</span></div>
     <div id="buildtest-project" style="padding:9px 10px;color:#CBD5E1;font-size:12px;border-bottom:1px solid #1E293B">Selected project</div>
     <div id="buildtest-check" style="padding:10px;border-bottom:1px solid #1E293B;color:#94A3B8;font-size:12px">No checks recorded yet.</div>
+    <pre id="buildtest-output" style="max-height:180px;overflow:auto;margin:0;padding:9px;border-bottom:1px solid #1E293B;background:#050914;color:#D1FAE5;font:10px/1.4 monospace;white-space:pre-wrap;overflow-wrap:anywhere">Build output will appear here.</pre>
     <div id="buildtest-commands" style="flex:1;min-height:0;overflow:auto;padding:9px;display:flex;flex-direction:column;gap:8px"></div>
     <div style="padding:8px;border-top:1px solid #1E293B;color:#94A3B8;font-size:10px">Uses the project checks already available in the native AndroidHarness Build &amp; Test screen. Results are shared with the phone.</div>
   </section>
@@ -1765,6 +1766,7 @@ async function refreshRemoteBuildTest() {
         card.append(title,code,run); host.appendChild(card);
       });
     } else { host.querySelectorAll("button").forEach(button => { button.disabled = !!data.terminalBusy || buildTestRunInFlight; }); }
+    document.getElementById("buildtest-output").textContent = Array.isArray(data.output) && data.output.length ? data.output.join("\n") : "Build output will appear here.";
     document.getElementById("buildtest-status").textContent = data.terminalBusy ? "Running" : "Ready";
   } catch (error) { document.getElementById("buildtest-status").textContent = error.message || "Unavailable"; }
   finally { buildTestRefreshInFlight = false; }
