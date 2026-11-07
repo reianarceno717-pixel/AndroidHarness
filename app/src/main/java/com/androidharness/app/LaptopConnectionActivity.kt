@@ -647,6 +647,87 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             }
                         }
                     }
+                    method == "GET" && path == "/api/models" -> {
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val container = app.container
+                                    val sessionId = getOrCreateRemoteSession(app)
+                                    val requestedSessionId = query.split("&")
+                                        .map { it.split("=", limit = 2) }
+                                        .firstOrNull { it.firstOrNull() == "sessionId" }
+                                        ?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }.orEmpty()
+                                    check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
+                                        "The active AndroidHarness chat changed. Refresh the remote view."
+                                    }
+                                    val state = container.chatModels.observe(sessionId).first()
+                                    check(state.error == null) { state.error ?: "Unable to load model selection" }
+                                    val catalogs = container.providers.catalogs.first()
+                                    val providersJson = JSONArray()
+                                    state.providers.filter { it.enabled }.forEach { provider ->
+                                        val modelsJson = JSONArray()
+                                        catalogs[provider.id].orEmpty().forEach { model ->
+                                            modelsJson.put(JSONObject().put("id", model.id).put("name", model.name))
+                                        }
+                                        providersJson.put(JSONObject().put("id", provider.id).put("name", provider.name)
+                                            .put("model", provider.model).put("models", modelsJson))
+                                    }
+                                    val active = state.selection.active
+                                    JSONObject().put("ok", true).put("sessionId", sessionId).put("providers", providersJson)
+                                        .put("selectedProviderId", active?.providerId ?: "").put("selectedModel", active?.model ?: "")
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to load models").toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/model" -> {
+                        val payload = try {
+                            JSONObject(body.ifBlank { "{}" })
+                        } catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val sessionId = payload.optString("sessionId").trim()
+                        val providerId = payload.optString("providerId").trim()
+                        val model = payload.optString("model").trim()
+                        if (sessionId.isBlank() || providerId.isBlank() || providerId.length > 500 || model.length > 500) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"A valid session, provider and model are required"}""")
+                            return
+                        }
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val container = app.container
+                                    check(getOrCreateRemoteSession(app) == sessionId) {
+                                        "The active AndroidHarness chat changed. Refresh the remote view."
+                                    }
+                                    check(!container.runManager.isRunning(sessionId)) {
+                                        "Wait for the current assistant response before changing models."
+                                    }
+                                    val state = container.chatModels.observe(sessionId).first()
+                                    check(state.error == null) { state.error ?: "Unable to load model selection" }
+                                    val provider = state.providers.firstOrNull { it.id == providerId && it.enabled }
+                                        ?: error("This provider is unavailable or disabled in AndroidHarness.")
+                                    val chosenModel = model.ifBlank { provider.model }
+                                    container.chatModels.select(sessionId, com.androidharness.app.data.ChatModelTarget.ACTIVE,
+                                        provider.id, chosenModel)
+                                    JSONObject().put("ok", true).put("sessionId", sessionId)
+                                        .put("provider", provider.name).put("model", chosenModel)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to change model").toString())
+                        }
+                    }
                     method == "GET" && path == "/api/chat/status" -> {
                         val app = appContext.applicationContext as? HarnessApp
                         if (app == null) {
@@ -1029,8 +1110,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
       <span>AI Specialist Team</span>
       <div style="display:flex;gap:6px;align-items:center">
         <button class="btn-secondary" id="read-btn" style="padding:4px 8px;font-size:11px" onclick="toggleAutoSpeech()">🔊 Auto Read: ON</button>
-        <span id="model-tag" style="color:#38BDF8;font-size:11px">Multi-Model</span>
+        <span id="model-tag" style="color:#38BDF8;font-size:11px">Loading model…</span>
       </div>
+    </div>
+    <div class="model-controls" style="display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid #1E293B;background:#0F172A">
+      <select id="provider-select" aria-label="AI provider" onchange="onRemoteProviderChanged()" style="min-width:0;flex:1;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px"></select>
+      <select id="model-select" aria-label="AI model" onchange="saveRemoteModel()" style="min-width:0;flex:1.3;background:#1E293B;color:#F8FAFC;border:1px solid #334155;border-radius:6px;padding:7px;font-size:12px"></select>
     </div>
     <div class="chat-messages" id="chat-box">
       <div class="msg ai">Connected virtually to AndroidHarness! You can speak or chat with the AI model team and edit phone workspace files right from this browser without installing anything.</div>
@@ -1057,7 +1142,80 @@ async function apiFetch(url, options = {}) {
 }
 let activeFilePath = "";
 let chatHistory = [];
+let remoteProviders = [];
+let modelSaveInFlight = false;
 let bridgeSessionId = sessionStorage.getItem("androidHarnessBridgeSessionId") || "";
+function fillModelSelect(providerId, selectedModel) {
+  const provider = remoteProviders.find(item => item.id === providerId);
+  const select = document.getElementById("model-select");
+  select.replaceChildren();
+  const models = provider && Array.isArray(provider.models) ? provider.models : [];
+  const options = models.length ? models.slice() : [{ id: provider ? provider.model : selectedModel, name: provider ? provider.model : selectedModel }];
+  if (selectedModel && !options.some(item => item.id === selectedModel)) options.unshift({ id: selectedModel, name: selectedModel });
+  options.forEach(item => {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.name || item.id;
+    select.appendChild(option);
+  });
+  if (selectedModel) select.value = selectedModel;
+  select.disabled = !provider || modelSaveInFlight;
+}
+async function loadRemoteModels() {
+  if (!bridgeSessionId) return;
+  try {
+    const requestedSessionId = bridgeSessionId;
+    const res = await apiFetch("/api/models?sessionId=" + encodeURIComponent(requestedSessionId));
+    const data = await res.json();
+    if (!res.ok || requestedSessionId !== bridgeSessionId) return;
+    remoteProviders = Array.isArray(data.providers) ? data.providers : [];
+    const providerSelect = document.getElementById("provider-select");
+    providerSelect.replaceChildren();
+    remoteProviders.forEach(provider => {
+      const option = document.createElement("option");
+      option.value = provider.id;
+      option.textContent = provider.name;
+      providerSelect.appendChild(option);
+    });
+    providerSelect.value = data.selectedProviderId || "";
+    fillModelSelect(providerSelect.value, data.selectedModel || "");
+    const selected = remoteProviders.find(item => item.id === providerSelect.value);
+    document.getElementById("model-tag").textContent = selected
+      ? selected.name + " · " + (data.selectedModel || selected.model) : "No model selected";
+    providerSelect.disabled = remoteProviders.length === 0;
+  } catch (_) { /* Keep last valid model selection during brief disconnects. */ }
+}
+async function onRemoteProviderChanged() {
+  const provider = remoteProviders.find(item => item.id === document.getElementById("provider-select").value);
+  if (!provider) return;
+  fillModelSelect(provider.id, provider.model);
+  await saveRemoteModel();
+}
+async function saveRemoteModel() {
+  if (modelSaveInFlight || !bridgeSessionId) return;
+  const providerId = document.getElementById("provider-select").value;
+  const model = document.getElementById("model-select").value;
+  if (!providerId || !model) return;
+  modelSaveInFlight = true;
+  document.getElementById("provider-select").disabled = true;
+  document.getElementById("model-select").disabled = true;
+  try {
+    const res = await apiFetch("/api/model", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ sessionId: bridgeSessionId, providerId, model })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to change model");
+    document.getElementById("model-tag").textContent = data.provider + " · " + data.model;
+  } catch (error) {
+    document.getElementById("status-meta").textContent = "Model selection not saved · " + error.message;
+    await loadRemoteModels();
+  } finally {
+    modelSaveInFlight = false;
+    document.getElementById("provider-select").disabled = remoteProviders.length === 0;
+    document.getElementById("model-select").disabled = remoteProviders.length === 0;
+  }
+}
 try { chatHistory = JSON.parse(sessionStorage.getItem("androidHarnessChatHistory") || "[]"); } catch (_) { chatHistory = []; }
 function resetRemoteChatForSession(sessionId) {
   bridgeSessionId = sessionId || "";
@@ -1065,6 +1223,10 @@ function resetRemoteChatForSession(sessionId) {
   chatHistory = [];
   sessionStorage.setItem("androidHarnessChatHistory", "[]");
   clearPendingControls();
+  remoteProviders = [];
+  document.getElementById("provider-select").replaceChildren();
+  document.getElementById("model-select").replaceChildren();
+  document.getElementById("model-tag").textContent = "Loading model…";
   activeFilePath = "";
   const editor = document.getElementById("editor");
   if (editor) editor.value = "";
@@ -1332,6 +1494,7 @@ async function refreshBridgeStatus() {
     const activeTitle = data.sessionTitle || "Active chat";
     const modelTag = document.getElementById("model-tag");
     if (modelTag) modelTag.textContent = (data.provider || "Provider unavailable") + " · " + (data.model || "Model unavailable");
+    await loadRemoteModels();
     label.textContent = bridgeAssistantBusy
       ? "AndroidHarness · " + activeTitle + " · Assistant responding"
       : "AndroidHarness · " + activeTitle + " · " + (data.permissionMode || "Connected");
