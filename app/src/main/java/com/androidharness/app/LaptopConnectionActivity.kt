@@ -257,7 +257,6 @@ class LaptopConnectionActivity : AppCompatActivity() {
             8, 8, 30L, TimeUnit.SECONDS, ArrayBlockingQueue(32),
             ThreadPoolExecutor.AbortPolicy(),
         )
-        private val chatHistoryLock = Any()
         private val bridgeChatBusy = AtomicBoolean(false)
         private const val REMOTE_SESSION_PREFS = "androidharness_remote_bridge"
         private const val REMOTE_SESSION_KEY = "shared_chat_session_id"
