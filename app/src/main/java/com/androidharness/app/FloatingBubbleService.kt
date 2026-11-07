@@ -539,7 +539,7 @@ class FloatingBubbleService : Service() {
             conn.setRequestProperty("Authorization", LaptopConnectionActivity.localBridgeAuthorization())
             conn.doOutput = true
             conn.connectTimeout = 10000
-            conn.readTimeout = 120000
+            conn.readTimeout = 135000
 
             val messages = org.json.JSONArray()
             history.forEach { (role, text) ->
