@@ -961,6 +961,32 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to change permission mode").toString())
                         }
                     }
+                    method == "GET" && path == "/api/settings" -> {
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val result = runCatching {
+                                runBlocking {
+                                    val settings = app.container.settings.settings.first()
+                                    JSONObject().put("ok", true)
+                                        .put("runInBackground", settings.runInBackground)
+                                        .put("notificationsEnabled", settings.notificationsEnabled)
+                                        .put("keepAlive", settings.keepAlive)
+                                        .put("liveUpdatesEnabled", settings.liveUpdatesEnabled)
+                                        .put("repoMapEnabled", settings.repoMapEnabled)
+                                        .put("showLiveCode", settings.showLiveCode)
+                                        .put("memoryEnabled", settings.memoryEnabled)
+                                        .put("runTipsEnabled", settings.runTipsEnabled)
+                                        .put("allowScreenshots", settings.allowScreenshots)
+                                        .put("themeMode", settings.themeMode.name)
+                                }
+                            }
+                            if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                            else writeHttpResponse(sock, 500, "application/json; charset=utf-8",
+                                JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to load settings").toString())
+                        }
+                    }
                     method == "GET" && path == "/api/skills" -> {
                         val app = appContext.applicationContext as? HarnessApp
                         if (app == null) {
@@ -1277,6 +1303,46 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             }
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8",
                                 history.toString())
+                        }
+                    }
+                    method == "POST" && path == "/api/settings/toggle" -> {
+                        val payload = try { JSONObject(body.ifBlank { "{}" }) }
+                        catch (_: org.json.JSONException) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Malformed JSON request body"}""")
+                            return
+                        }
+                        val key = payload.optString("key").trim()
+                        if (!payload.has("enabled") || key !in setOf("runInBackground", "notificationsEnabled", "keepAlive",
+                                "liveUpdatesEnabled", "repoMapEnabled", "showLiveCode", "memoryEnabled",
+                                "runTipsEnabled", "allowScreenshots")) {
+                            writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Unsupported setting or missing boolean value"}""")
+                        } else {
+                            val app = appContext.applicationContext as? HarnessApp
+                            if (app == null) {
+                                writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                            } else {
+                                val enabled = payload.optBoolean("enabled")
+                                val result = runCatching {
+                                    runBlocking {
+                                        val settings = app.container.settings
+                                        when (key) {
+                                            "runInBackground" -> settings.setRunInBackground(enabled)
+                                            "notificationsEnabled" -> settings.setNotificationsEnabled(enabled)
+                                            "keepAlive" -> settings.setKeepAlive(enabled)
+                                            "liveUpdatesEnabled" -> settings.setLiveUpdatesEnabled(enabled)
+                                            "repoMapEnabled" -> settings.setRepoMapEnabled(enabled)
+                                            "showLiveCode" -> settings.setShowLiveCode(enabled)
+                                            "memoryEnabled" -> settings.setMemoryEnabled(enabled)
+                                            "runTipsEnabled" -> settings.setRunTipsEnabled(enabled)
+                                            "allowScreenshots" -> settings.setAllowScreenshots(enabled)
+                                        }
+                                    }
+                                    JSONObject().put("ok", true).put("key", key).put("enabled", enabled)
+                                }
+                                if (result.isSuccess) writeHttpResponse(sock, 200, "application/json; charset=utf-8", result.getOrThrow().toString())
+                                else writeHttpResponse(sock, 409, "application/json; charset=utf-8",
+                                    JSONObject().put("ok", false).put("error", result.exceptionOrNull()?.message ?: "Unable to update setting").toString())
+                            }
                         }
                     }
                     method == "POST" && path == "/api/skills/toggle" -> {
