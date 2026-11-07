@@ -590,25 +590,48 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         }
                     }
                     method == "GET" && path == "/api/chat/status" -> {
-                        val historyFile = File(workspaceDir, ".androidharness-chat-history.json")
-                        val messageCount = synchronized(chatHistoryLock) {
-                            runCatching {
-                                if (historyFile.isFile) JSONArray(historyFile.readText()).length() else 0
-                            }.getOrDefault(0)
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val status = runCatching {
+                                runBlocking {
+                                    val sessionId = getOrCreateRemoteSession(app)
+                                    val container = app.container
+                                    val messages = container.sessions.messages(sessionId)
+                                    JSONObject()
+                                        .put("ok", true)
+                                        .put("busy", bridgeChatBusy.get() || container.runManager.isRunning(sessionId))
+                                        .put("messageCount", messages.count {
+                                            it.role == com.androidharness.app.core.Role.USER ||
+                                                it.role == com.androidharness.app.core.Role.ASSISTANT
+                                        })
+                                        .put("sessionId", sessionId)
+                                }
+                            }.getOrElse {
+                                JSONObject().put("ok", false).put("error", it.message ?: "Unable to read remote chat status")
+                            }
+                            writeHttpResponse(sock, if (status.optBoolean("ok")) 200 else 500,
+                                "application/json; charset=utf-8", status.toString())
                         }
-                        val status = JSONObject()
-                            .put("ok", true)
-                            .put("busy", bridgeChatBusy.get())
-                            .put("messageCount", messageCount)
-                        writeHttpResponse(sock, 200, "application/json; charset=utf-8", status.toString())
                     }
                     method == "GET" && path == "/api/chat/history" -> {
-                        val historyFile = File(workspaceDir, ".androidharness-chat-history.json")
-                        val history = synchronized(chatHistoryLock) {
-                            runCatching { if (historyFile.isFile) JSONArray(historyFile.readText()) else JSONArray() }
-                                .getOrDefault(JSONArray())
+                        val app = appContext.applicationContext as? HarnessApp
+                        if (app == null) {
+                            writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                        } else {
+                            val history = runCatching {
+                                runBlocking {
+                                    val sessionId = getOrCreateRemoteSession(app)
+                                    remoteHistoryJson(app.container.sessions.messages(sessionId))
+                                }
+                            }.getOrElse {
+                                writeHttpResponse(sock, 500, "application/json; charset=utf-8", """{"error":"Unable to load shared chat history"}""")
+                                return
+                            }
+                            writeHttpResponse(sock, 200, "application/json; charset=utf-8",
+                                JSONObject().put("messages", history).toString())
                         }
-                        writeHttpResponse(sock, 200, "application/json; charset=utf-8", JSONObject().put("messages", history).toString())
                     }
                     method == "POST" && path == "/api/chat" -> {
                         val payload = try {
@@ -618,7 +641,6 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             return
                         }
                         val prompt = payload.optString("prompt").trim()
-                        val model = payload.optString("model").ifBlank { HarnessProvider.DEFAULT_MODEL }
                         if (prompt.isEmpty()) {
                             writeHttpResponse(sock, 400, "application/json; charset=utf-8", """{"error":"Empty prompt"}""")
                             return
@@ -632,53 +654,85 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             return
                         }
                         try {
-                            val historyFile = File(workspaceDir, ".androidharness-chat-history.json")
-                            val conversation = synchronized(chatHistoryLock) {
-                                val history = runCatching {
-                                    if (historyFile.isFile) JSONArray(historyFile.readText()) else JSONArray()
-                                }.getOrDefault(JSONArray())
-                                history.put(JSONObject().put("role", "user").put("content", prompt))
-                                while (history.length() > 40) history.remove(0)
-                                val temp = File(historyFile.parentFile, historyFile.name + ".next")
-                                temp.writeText(history.toString())
-                                if (!temp.renameTo(historyFile)) {
-                                    temp.delete()
-                                    historyFile.writeText(history.toString())
-                                }
-                                buildList {
-                                    for (i in 0 until history.length()) {
-                                        val item = history.optJSONObject(i) ?: continue
-                                        val text = item.optString("content").take(32_000)
-                                        val role = when (item.optString("role").lowercase()) {
-                                            "assistant" -> Role.ASSISTANT
-                                            "user" -> Role.USER
-                                            else -> continue
-                                        }
-                                        if (text.isNotBlank()) add(ChatMessage(role = role, text = text))
+                            val app = appContext.applicationContext as? HarnessApp
+                            if (app == null) {
+                                writeHttpResponse(sock, 503, "application/json; charset=utf-8", """{"error":"AndroidHarness application is unavailable"}""")
+                                return
+                            }
+                            val result = runCatching {
+                                runBlocking {
+                                    val container = app.container
+                                    val sessionId = getOrCreateRemoteSession(app)
+                                    val modelState = container.chatModels.observe(sessionId).first()
+                                    check(modelState.error == null) {
+                                        modelState.error ?: "Unable to load the remote chat model configuration"
                                     }
+                                    val choice = modelState.selection.active
+                                        ?: error("No active AI model is configured in AndroidHarness")
+                                    val provider = modelState.providers.firstOrNull { it.id == choice.providerId }
+                                        ?: error("The selected AI provider is no longer available")
+                                    val config = provider.copy(model = choice.model)
+                                    val apiKey = if (provider.id == HarnessProvider.ID) {
+                                        container.providers.harnessApiKey(modelState.providers)
+                                    } else {
+                                        provider.effectiveApiKey(container.providers.apiKey(provider.id))
+                                    }
+                                    check(apiKey.isNotBlank()) {
+                                        "The selected provider has no API key configured"
+                                    }
+                                    val workspace = container.workspace.forSession(sessionId)
+                                    container.runManager.startRun(
+                                        sessionId = sessionId,
+                                        text = prompt,
+                                        imageRefs = emptyList(),
+                                        config = config,
+                                        apiKey = apiKey,
+                                        permissionMode = modelState.settings.permissionMode,
+                                        mode = com.androidharness.app.agent.AgentMode.ACT,
+                                        maxOutputTokens = modelState.settings.maxOutputTokens,
+                                        maxContextTokens = modelState.settings.maxContextTokens,
+                                        thinking = modelState.selection.thinking,
+                                        maxIterations = modelState.settings.maxIterations,
+                                        workspaceOverride = workspace,
+                                        notifyOnFinish = false,
+                                        onlyIfIdle = true,
+                                        allowModelFallback = modelState.settings.sameModelAcrossChats,
+                                    )
+                                    val completed = withTimeout(110_000L) {
+                                        container.runManager.live(sessionId).first { !it.running }
+                                    }
+                                    val messages = container.sessions.messages(sessionId)
+                                    val history = remoteHistoryJson(messages)
+                                    val reply = messages.lastOrNull {
+                                        it.role == com.androidharness.app.core.Role.ASSISTANT
+                                    }?.text.orEmpty()
+                                    val activeModel = container.runManager.controls.flow(sessionId).value.provider?.model
+                                        ?: config.model
+                                    JSONObject()
+                                        .put("ok", completed.error == null && reply.isNotBlank())
+                                        .put("model", activeModel)
+                                        .put("reply", reply.ifBlank { completed.error ?: "No response was generated." })
+                                        .put("error", completed.error)
+                                        .put("messages", history)
+                                        .put("sessionId", sessionId)
                                 }
                             }
-                            val reply = StringBuilder()
-                            val thoughts = StringBuilder()
-                            var activeModel = model
-                            var errorMsg: String? = null
-                            runBlocking {
-                                val provider = HarnessProvider.create()
-                                val cfg = HarnessProvider.config.copy(model = model)
-                                provider.streamChat(
-                                    config = cfg,
-                                    apiKey = HarnessProvider.KEYLESS,
-                                    systemPrompt = "You are AndroidHarness running live on the user's Android phone and connected to its paired remote interfaces. Continue the shared conversation naturally.",
-                                    messages = conversation,
-                                    tools = emptyList(),
-                                    options = RequestOptions(),
-                                ).collect { event ->
-                                    when (event) {
-                                        is StreamEvent.TextDelta -> reply.append(event.text)
-                                        is StreamEvent.ThinkingDelta -> thoughts.append(event.text)
-                                        is StreamEvent.ProviderChanged -> activeModel = event.config.model
-                                        is StreamEvent.Failure -> errorMsg = event.message
-                                        else -> {}
+                            if (result.isSuccess) {
+                                val response = result.getOrThrow()
+                                writeHttpResponse(sock, if (response.optBoolean("ok")) 200 else 502,
+                                    "application/json; charset=utf-8", response.toString())
+                            } else {
+                                val error = result.exceptionOrNull()
+                                val status = if (error is kotlinx.coroutines.TimeoutCancellationException) 504 else 502
+                                val message = error?.message ?: "AndroidHarness agent execution failed"
+                                writeHttpResponse(sock, status, "application/json; charset=utf-8",
+                                    JSONObject().put("ok", false).put("error", message).toString())
+                            }
+                        } finally {
+                            bridgeChatBusy.set(false)
+                        }
+                    }
+                    else -> {}
                                     }
                                 }
                             }
