@@ -524,6 +524,13 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             val json = runCatching {
                                 runBlocking {
                                     val sessionId = getOrCreateRemoteSession(app)
+                                    val requestedSessionId = query.split("&")
+                                        .map { it.split("=", limit = 2) }
+                                        .firstOrNull { it.firstOrNull() == "sessionId" }
+                                        ?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }.orEmpty()
+                                    check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
+                                        "The active AndroidHarness chat changed. Refresh the remote view."
+                                    }
                                     val workspace = app.container.workspace.forSession(sessionId)
                                     val visibleFiles = workspace.walk(".")
                                         .filter { node ->
@@ -568,6 +575,13 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 val result = runCatching {
                                     runBlocking {
                                         val sessionId = getOrCreateRemoteSession(app)
+                                        val requestedSessionId = query.split("&")
+                                            .map { it.split("=", limit = 2) }
+                                            .firstOrNull { it.firstOrNull() == "sessionId" }
+                                            ?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }.orEmpty()
+                                        check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
+                                            "The active AndroidHarness chat changed. Refresh the remote view."
+                                        }
                                         val node = app.container.workspace.forSession(sessionId).resolve(relPath!!)
                                         check(node.exists && node.isFile) { "File not found" }
                                         check(node.length <= 2 * 1024 * 1024) { "File exceeds the 2 MB preview limit" }
@@ -614,6 +628,10 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     val result = runCatching {
                                         runBlocking {
                                             val sessionId = getOrCreateRemoteSession(app)
+                                            val requestedSessionId = payload.optString("sessionId").trim()
+                                            check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
+                                                "The active AndroidHarness chat changed. Refresh the remote view."
+                                            }
                                             val node = app.container.workspace.forSession(sessionId).resolve(relPath)
                                             check(!node.isDirectory) { "Target path is a directory" }
                                             node.writeText(content)
@@ -763,14 +781,22 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             val history = runCatching {
                                 runBlocking {
                                     val sessionId = getOrCreateRemoteSession(app)
-                                    remoteHistoryJson(app.container.sessions.messages(sessionId))
+                                    val requestedSessionId = query.split("&")
+                                        .map { it.split("=", limit = 2) }
+                                        .firstOrNull { it.firstOrNull() == "sessionId" }
+                                        ?.getOrNull(1)?.let { URLDecoder.decode(it, "UTF-8") }.orEmpty()
+                                    check(requestedSessionId.isBlank() || requestedSessionId == sessionId) {
+                                        "The active AndroidHarness chat changed. Refresh the remote view."
+                                    }
+                                    JSONObject().put("sessionId", sessionId)
+                                        .put("messages", remoteHistoryJson(app.container.sessions.messages(sessionId)))
                                 }
                             }.getOrElse {
                                 writeHttpResponse(sock, 500, "application/json; charset=utf-8", """{"error":"Unable to load shared chat history"}""")
                                 return
                             }
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8",
-                                JSONObject().put("messages", history).toString())
+                                history.toString())
                         }
                     }
                     method == "POST" && path == "/api/chat" -> {
@@ -1088,7 +1114,8 @@ function toggleVoice() {
 
 async function loadChatHistory() {
   try {
-    const res = await apiFetch("/api/chat/history");
+    if (!bridgeSessionId) return;
+    const res = await apiFetch("/api/chat/history?sessionId=" + encodeURIComponent(bridgeSessionId));
     if (!res.ok) return;
     const data = await res.json();
     chatHistory = Array.isArray(data.messages) ? data.messages : [];
@@ -1106,7 +1133,8 @@ async function loadChatHistory() {
 }
 
 async function loadFiles() {
-  const res = await apiFetch("/api/files");
+  if (!bridgeSessionId) return;
+  const res = await apiFetch("/api/files?sessionId=" + encodeURIComponent(bridgeSessionId));
   const data = await res.json();
   const list = document.getElementById("file-list");
   list.innerHTML = "";
@@ -1126,7 +1154,7 @@ async function loadFiles() {
 async function openFile(path) {
   activeFilePath = path;
   document.getElementById("current-file").textContent = path;
-  const res = await apiFetch("/api/file?path=" + encodeURIComponent(path));
+  const res = await apiFetch("/api/file?path=" + encodeURIComponent(path) + "&sessionId=" + encodeURIComponent(bridgeSessionId));
   const data = await res.json();
   document.getElementById("editor").value = data.content || "";
   loadFiles();
@@ -1147,7 +1175,7 @@ async function saveCurrentFile() {
   await apiFetch("/api/file", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ path: activeFilePath, content: document.getElementById("editor").value })
+    body: JSON.stringify({ sessionId: bridgeSessionId, path: activeFilePath, content: document.getElementById("editor").value })
   });
   loadFiles();
 }
@@ -1299,9 +1327,11 @@ let chatRequestInFlight = false;
 async function refreshSharedChatHistory() {
   if (chatRequestInFlight) return;
   try {
-    const res = await apiFetch("/api/chat/history");
+    if (!bridgeSessionId) return;
+    const res = await apiFetch("/api/chat/history?sessionId=" + encodeURIComponent(bridgeSessionId));
     if (!res.ok) return;
     const data = await res.json();
+    if (data.sessionId && data.sessionId !== bridgeSessionId) return;
     const latest = Array.isArray(data.messages) ? data.messages : [];
     if (JSON.stringify(latest) === JSON.stringify(chatHistory)) return;
     chatHistory = latest;
