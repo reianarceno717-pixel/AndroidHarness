@@ -8,6 +8,11 @@ import android.content.Intent
 import android.graphics.Color
 import android.net.ConnectivityManager
 import android.os.Bundle
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.net.wifi.WifiManager
+import android.os.PowerManager
+import java.io.ByteArrayOutputStream
 import android.provider.Settings
 import android.widget.Button
 import android.widget.TextView
@@ -281,18 +286,100 @@ class LaptopConnectionActivity : AppCompatActivity() {
             Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
         }
 
-        internal val pairedToken: String
+        @Volatile
+        private var bridgeWakeLock: PowerManager.WakeLock? = null
+
+        @Volatile
+        private var bridgeWifiLock: WifiManager.WifiLock? = null
+
+        @Volatile
+        private var cachedIconBytes: ByteArray? = null
+
+        @Volatile
+        private var cachedIconDataUri: String? = null
+
+        val pairedToken: String
             get() = bridgeToken
 
-        /** Local loopback URL used by FloatingBubbleService overlay WebView to render the full app face. */
-        fun localOverlayUrl(appContext: Context): String {
-            ensureServerRunning(appContext)
+        fun isServerRunning(): Boolean = serverSocket?.isClosed == false
+
+        fun localOverlayUrl(context: Context): String {
+            ensureServerRunning(context)
             return "http://127.0.0.1:$activePort/?token=$bridgeToken&overlay=1"
+        }
+
+        fun buildWebClientHtml(token: String = bridgeToken, overlayMode: Boolean = false): String {
+            val injectedBoot = "<script>window.__HARNESS_BOOT_TOKEN__ = \"" +
+                token.replace("\"", "\\\"") +
+                "\"; window.__HARNESS_OVERLAY__ = " +
+                (if (overlayMode) "true" else "false") + ";</script>"
+            return LAPTOP_WEB_HTML.replace("<!--__HARNESS_BOOT__-->", injectedBoot)
+        }
+
+        fun getAppIconPngBytes(context: Context): ByteArray? {
+            cachedIconBytes?.let { return it }
+            return runCatching {
+                val drawable = context.packageManager.getApplicationIcon(context.applicationInfo)
+                val size = 96
+                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+                drawable.setBounds(0, 0, size, size)
+                drawable.draw(canvas)
+                val out = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                val bytes = out.toByteArray()
+                cachedIconBytes = bytes
+                cachedIconDataUri = "data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+                bytes
+            }.getOrNull()
+        }
+
+        fun getAppIconDataUri(context: Context): String {
+            cachedIconDataUri?.let { return it }
+            getAppIconPngBytes(context)
+            return cachedIconDataUri ?: ""
+        }
+
+        @Synchronized
+        private fun acquireBridgeLocks(appContext: Context) {
+            runCatching {
+                val pm = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                if (bridgeWakeLock == null && pm != null) {
+                    bridgeWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "harness:lan_bridge").apply {
+                        setReferenceCounted(false)
+                    }
+                }
+                if (bridgeWakeLock?.isHeld == false) {
+                    bridgeWakeLock?.acquire(12L * 60 * 60 * 1000)
+                }
+            }
+            runCatching {
+                val wm = appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                if (bridgeWifiLock == null && wm != null) {
+                    @Suppress("DEPRECATION")
+                    val mode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                    } else {
+                        WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                    }
+                    bridgeWifiLock = wm.createWifiLock(mode, "harness:lan_wifi").apply {
+                        setReferenceCounted(false)
+                    }
+                }
+                if (bridgeWifiLock?.isHeld == false) {
+                    bridgeWifiLock?.acquire()
+                }
+            }
+            runCatching {
+                AgentService.acquireKeepalive(appContext.applicationContext)
+                (appContext.applicationContext as? HarnessApp)?.container?.runManager?.acquireBackgroundKeepalive()
+            }
         }
 
         @Synchronized
         fun ensureServerRunning(appContext: Context) {
             appContextRef = appContext.applicationContext
+            acquireBridgeLocks(appContext.applicationContext)
             if (serverSocket != null && serverSocket?.isClosed == false) return
             val workspaceDir = (appContext.getExternalFilesDir(null) ?: appContext.filesDir)
                 .resolve("workspace")
@@ -397,7 +484,20 @@ class LaptopConnectionActivity : AppCompatActivity() {
                     String(buf, 0, read)
                 } else ""
 
-                if (path.startsWith("/api/") && authorization != "Bearer $bridgeToken") {
+                if (method == "GET" && path == "/api/app-icon.png") {
+                    val png = appContextRef?.let { getAppIconPngBytes(it) }
+                    if (png != null) {
+                        val headers = "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: ${png.size}\r\nCache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n"
+                        val out = sock.getOutputStream()
+                        out.write(headers.toByteArray(Charsets.UTF_8))
+                        out.write(png)
+                        out.flush()
+                        return
+                    }
+                }
+
+                val queryToken = query.split("&").firstOrNull { it.startsWith("token=") }?.substringAfter("token=").orEmpty()
+                if (path.startsWith("/api/") && authorization != "Bearer $bridgeToken" && queryToken != bridgeToken) {
                     writeHttpResponse(sock, 401, "application/json; charset=utf-8", """{"error":"Unauthorized. Open the paired link shown in AndroidHarness."}""")
                     return
                 }
@@ -421,12 +521,13 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8", json.toString())
                         }
 
-                        method == "GET" && path == "/api/state" -> {
+                        method == "GET" && (path == "/api/state" || path == "/api/status") -> {
                             if (container == null) {
                                 val fallbackJson = JSONObject()
                                     .put("ok", true)
                                     .put("sessionId", "default")
-                                    .put("sessionTitle", "Shared Assistant")
+                                    .put("sessionTitle", "AndroidHarness")
+                                    .put("appIconDataUri", appContextRef?.let { getAppIconDataUri(it) } ?: "")
                                     .put("messages", JSONArray())
                                     .put("live", JSONObject().put("running", false))
                                 writeHttpResponse(sock, 200, "application/json; charset=utf-8", fallbackJson.toString())
@@ -443,18 +544,74 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 val allProviders = container.providers.providers.first()
                                 val catalogs = container.providers.catalogs.first()
 
+                                val toolResultByCallId = HashMap<String, ChatMessage>()
+                                val subagentAssistByCallId = HashMap<String, ChatMessage>()
+                                val taskCallIds = HashSet<String>()
+                                msgs.forEach { m ->
+                                    m.toolCalls.forEach { tc ->
+                                        if (tc.name == "task" || tc.id.startsWith("team-")) {
+                                            taskCallIds.add(tc.id)
+                                        }
+                                    }
+                                    val tcid = m.toolCallId
+                                    if (!tcid.isNullOrBlank()) {
+                                        if (m.role == Role.TOOL) toolResultByCallId[tcid] = m
+                                        else if (m.role == Role.ASSISTANT) subagentAssistByCallId[tcid] = m
+                                    }
+                                }
+                                val runningCallIds = live.runningCalls.map { it.id }.toSet()
+
                                 val msgArr = JSONArray()
                                 msgs.takeLast(120).forEach { m ->
                                     if (m.toolCallId != null && m.role == Role.ASSISTANT) return@forEach
+                                    if (m.role == Role.TOOL && m.toolCallId != null && m.toolCallId in taskCallIds) return@forEach
+
+                                    val subagentsArr = JSONArray()
+                                    val otherToolsArr = JSONArray()
+                                    m.toolCalls.forEach { tc ->
+                                        val parsedArgs = runCatching { JSONObject(tc.argumentsJson) }.getOrNull()
+                                        val resMsg = toolResultByCallId[tc.id] ?: subagentAssistByCallId[tc.id]
+                                        val isRunningCall = tc.id in runningCallIds || (live.running && resMsg == null && tc.id.startsWith("team-"))
+                                        if (tc.name == "task" || tc.id.startsWith("team-")) {
+                                            val stepsArr = JSONArray()
+                                            live.subagentSteps[tc.id].orEmpty().forEach { stepsArr.put(it) }
+                                            subagentsArr.put(
+                                                JSONObject()
+                                                    .put("id", tc.id)
+                                                    .put("name", parsedArgs?.optString("name")?.ifBlank { "Developer Specialist" } ?: "Developer Specialist")
+                                                    .put("model", parsedArgs?.optString("model") ?: activeProvider.model)
+                                                    .put("prompt", parsedArgs?.optString("prompt") ?: "")
+                                                    .put("running", isRunningCall)
+                                                    .put("isError", resMsg?.isError ?: false)
+                                                    .put("result", resMsg?.text ?: "")
+                                                    .put("steps", stepsArr)
+                                            )
+                                        } else {
+                                            otherToolsArr.put(
+                                                JSONObject()
+                                                    .put("id", tc.id)
+                                                    .put("name", tc.name)
+                                                    .put("args", tc.argumentsJson.take(240))
+                                                    .put("running", isRunningCall)
+                                                    .put("isError", resMsg?.isError ?: false)
+                                                    .put("result", resMsg?.text?.take(600) ?: "")
+                                            )
+                                        }
+                                    }
+
                                     msgArr.put(
                                         JSONObject()
                                             .put("id", m.id ?: "")
                                             .put("role", m.role.name)
                                             .put("text", m.text)
                                             .put("thinking", m.thinking)
+                                            .put("thinkingMs", m.thinkingMs)
                                             .put("toolName", m.toolName ?: "")
                                             .put("isError", m.isError)
                                             .put("createdAt", m.createdAt)
+                                            .put("model", activeProvider.model)
+                                            .put("subagents", subagentsArr)
+                                            .put("tools", otherToolsArr)
                                     )
                                 }
 
@@ -555,10 +712,12 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     .put("repoMapEnabled", prefs.repoMapEnabled)
                                     .put("fallbackEnabled", prefs.fallbackPolicy.enabled)
 
+                                settingsObj.put("runInBackground", prefs.runInBackground)
                                 JSONObject()
                                     .put("ok", true)
                                     .put("sessionId", sid)
-                                    .put("sessionTitle", currentSession?.title ?: "Shared Assistant")
+                                    .put("sessionTitle", currentSession?.title ?: "AndroidHarness")
+                                    .put("appIconDataUri", appContextRef?.let { getAppIconDataUri(it) } ?: "")
                                     .put("messages", msgArr)
                                     .put("sessions", sessArr)
                                     .put("live", liveObj)
@@ -656,6 +815,9 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 if (payload.has("repoMapEnabled")) {
                                     container.settings.setRepoMapEnabled(payload.optBoolean("repoMapEnabled"))
                                 }
+                                if (payload.has("runInBackground")) {
+                                    container.settings.setRunInBackground(payload.optBoolean("runInBackground"))
+                                }
                             }
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
                         }
@@ -670,14 +832,16 @@ class LaptopConnectionActivity : AppCompatActivity() {
                             writeHttpResponse(sock, 200, "application/json; charset=utf-8", """{"ok":true}""")
                         }
 
-                        method == "POST" && path == "/api/approval" -> {
+                        method == "POST" && (path == "/api/approval" || path == "/api/control") -> {
                             if (container != null) {
                                 val payload = JSONObject(body.ifBlank { "{}" })
                                 val action = payload.optString("action")
                                 runBlocking {
                                     val sid = resolveSharedSessionId(container)
                                     when (action) {
+                                        "stop" -> container.runManager.stop(sid)
                                         "approve" -> container.runManager.approve(sid, payload.optBoolean("remember", false))
+                                        "approve_always" -> container.runManager.approve(sid, true)
                                         "deny" -> container.runManager.deny(sid)
                                         "answer" -> container.runManager.answerQuestion(sid, payload.optString("answer"))
                                     }
@@ -693,7 +857,9 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     val rel = file.relativeTo(workspaceDir).path
                                     files.put(
                                         JSONObject()
+                                            .put("name", rel)
                                             .put("path", rel)
+                                            .put("isDir", false)
                                             .put("size", file.length())
                                     )
                                 }
@@ -705,7 +871,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         method == "GET" && path == "/api/file" -> {
                             val relPath = query.split("&")
                                 .map { it.split("=", limit = 2) }
-                                .firstOrNull { it.firstOrNull() == "path" }
+                                .firstOrNull { it.firstOrNull() == "path" || it.firstOrNull() == "name" }
                                 ?.getOrNull(1)
                                 ?.let { URLDecoder.decode(it, "UTF-8") }
                                 .orEmpty()
@@ -714,6 +880,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 writeHttpResponse(sock, 404, "application/json; charset=utf-8", """{"error":"File not found"}""")
                             } else {
                                 val json = JSONObject()
+                                    .put("name", relPath)
                                     .put("path", relPath)
                                     .put("content", target.readText())
                                 writeHttpResponse(sock, 200, "application/json; charset=utf-8", json.toString())
@@ -722,7 +889,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
                         method == "POST" && path == "/api/file" -> {
                             val payload = JSONObject(body.ifBlank { "{}" })
-                            val relPath = payload.optString("path").trim().removePrefix("/")
+                            val relPath = payload.optString("name", payload.optString("path")).trim().removePrefix("/")
                             val content = payload.optString("content")
                             val target = File(workspaceDir, relPath).canonicalFile
                             if (relPath.isEmpty() || !target.path.startsWith(workspaceDir.canonicalPath + File.separator)) {
@@ -746,9 +913,16 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                 return
                             }
 
+                            val specialistId = payload.optString("specialistId").trim()
                             if (container != null) {
+                                appContextRef?.let { acquireBridgeLocks(it) }
                                 // Route through the real native AppContainer, RunManager, AgentEngine, and shared SessionRepository
                                 val resultJson = runBlocking {
+                                    val specialists = PersistentSpecialistTeam.mergePreservingConfigured(container.settings.settings.first().chatAgents)
+                                    val chosenSpec = specialists.firstOrNull { it.id == specialistId }
+                                    val effectivePrompt = if (chosenSpec != null) {
+                                        "[Specialist Role: ${chosenSpec.name} — ${chosenSpec.description}]\n${chosenSpec.instructions}\n\nUser request: $prompt"
+                                    } else prompt
                                     if (requestedProviderId.isNotEmpty() || requestedModel.isNotEmpty()) {
                                         val currentPrefs = container.settings.settings.first()
                                         val pid: String = requestedProviderId.ifBlank { currentPrefs.activeProviderId ?: HarnessProvider.ID }
@@ -763,7 +937,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     val mode = if (requestedMode == "PLAN") AgentMode.PLAN else AgentMode.ACT
 
                                     if (container.runManager.isRunning(sid)) {
-                                        container.runManager.inject(sid, prompt)
+                                        container.runManager.inject(sid, effectivePrompt)
                                         return@runBlocking JSONObject()
                                             .put("ok", true)
                                             .put("queued", true)
@@ -774,7 +948,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
                                     val startedSid = container.runManager.startRun(
                                         sessionId = sid,
-                                        text = prompt,
+                                        text = effectivePrompt,
                                         imageRefs = emptyList(),
                                         config = providerConfig,
                                         apiKey = apiKey,
@@ -848,13 +1022,40 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         }
 
                         else -> {
-                            writeHttpResponse(sock, 200, "text/html; charset=utf-8", LAPTOP_WEB_HTML)
+                            val isOverlay = query.contains("overlay=1")
+                            val html = buildWebClientHtml(
+                                token = if (queryToken == bridgeToken) bridgeToken else "",
+                                overlayMode = isOverlay,
+                            )
+                            writeHttpResponse(sock, 200, "text/html; charset=utf-8", html)
                         }
                     }
                 } catch (e: Exception) {
                     val err = JSONObject().put("error", e.message ?: "Internal bridge error")
                     writeHttpResponse(sock, 500, "application/json; charset=utf-8", err.toString())
                 }
+            }
+        }
+
+        fun handleDirectApi(context: Context, method: String, pathAndQuery: String, body: String): String {
+            ensureServerRunning(context)
+            return try {
+                val cleanPath = if (pathAndQuery.startsWith("/")) pathAndQuery else "/$pathAndQuery"
+                val url = java.net.URL("http://127.0.0.1:$activePort$cleanPath")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = method.uppercase()
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("Authorization", "Bearer $bridgeToken")
+                conn.connectTimeout = 5_000
+                conn.readTimeout = 45_000
+                if (method.uppercase() == "POST" && body.isNotEmpty()) {
+                    conn.doOutput = true
+                    conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                }
+                val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+                stream?.bufferedReader()?.use { it.readText() } ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                JSONObject().put("ok", false).put("error", e.message ?: "Bridge error").toString()
             }
         }
 
@@ -887,520 +1088,1169 @@ class LaptopConnectionActivity : AppCompatActivity() {
          * against the native AndroidHarness AppContainer engine and shared SessionRepository state,
          * adapting responsively across phones, tablets, laptops, and the Messenger-style floating overlay WebView.
          */
-        private const val LAPTOP_WEB_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" /><title>AndroidHarness · Complete Companion & Overlay App</title><style>
-  :root { color-scheme: dark; --bg: #090D16; --surface: #0F172A; --surface2: #1E293B; --border: #26334D; --accent: #38BDF8; --accent2: #10B981; --text: #F8FAFC; --muted: #94A3B8; --danger: #EF4444; }
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border); gap: 8px; flex-shrink: 0; }
-  body.overlay-mode header { padding: 6px 10px; }
-  .brand { font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-  .brand-logo { width: 24px; height: 24px; border-radius: 7px; background: linear-gradient(135deg, #0284C7, #10B981); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px; color: #fff; box-shadow: 0 2px 8px rgba(16,185,129,0.3); }
-  .status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.35); font-size: 11px; color: #34D399; font-family: monospace; }
-  .status-pill.offline { background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.4); color: #F87171; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display: inline-block; }
-  .nav-bar { display: flex; background: var(--surface); border-bottom: 1px solid var(--border); overflow-x: auto; flex-shrink: 0; }
-  .nav-btn { flex: 1; min-width: 72px; padding: 9px 8px; font-size: 12px; font-weight: 600; color: var(--muted); background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; text-align: center; }
-  .nav-btn.active { color: var(--accent); border-bottom-color: var(--accent); background: rgba(56,189,248,0.06); }
-  .reconnect-banner { display: none; background: #7F1D1D; color: #FECACA; padding: 6px 12px; font-size: 12px; text-align: center; border-bottom: 1px solid #DC2626; }
-  .reconnect-banner.show { display: block; }
-  .view-container { flex: 1; display: none; min-height: 0; overflow: hidden; }
-  .view-container.active { display: flex; flex-direction: column; }
-  .chat-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 7px 12px; background: rgba(15,23,42,0.75); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-  .chip { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 11px; cursor: pointer; }
-  .chat-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-  .msg { padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.48; white-space: pre-wrap; word-break: break-word; max-width: 92%; }
-  .msg.USER { background: #0369A1; color: #F8FAFC; align-self: flex-end; border-bottom-right-radius: 3px; }
-  .msg.ASSISTANT { background: var(--surface2); color: var(--text); align-self: flex-start; border: 1px solid var(--border); border-bottom-left-radius: 3px; }
-  .msg.SYSTEM, .msg.TOOL { background: rgba(30,41,59,0.55); color: var(--muted); font-family: monospace; font-size: 11px; align-self: stretch; max-width: 100%; }
-  .msg.error { border-color: var(--danger); color: #FCA5A5; }
-  .thinking-box { font-size: 11px; color: #94A3B8; border-left: 2px solid var(--accent); padding-left: 8px; margin-bottom: 6px; font-style: italic; }
-  .live-bar { display: none; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: rgba(2,132,199,0.14); border-top: 1px solid rgba(56,189,248,0.3); font-size: 12px; color: #7DD3FC; }
-  .live-bar.active { display: flex; }
-  .prompt-card { display: none; margin: 8px 12px; padding: 10px 12px; background: #1E1B4B; border: 1px solid #6366F1; border-radius: 8px; font-size: 12px; }
-  .prompt-card.active { display: block; }
-  .chat-input-bar { padding: 9px 12px; background: var(--surface); border-top: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
-  input[type=text], textarea, select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; font-size: 13px; outline: none; }
-  .chat-input-bar input { flex: 1; }
-  button.btn { background: #0284C7; color: #fff; border: none; border-radius: 7px; padding: 8px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
-  button.btn.secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-  button.btn.danger { background: var(--danger); }
-  .scroll-pane { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
-  .card-title { font-weight: 700; font-size: 14px; color: var(--text); display: flex; justify-content: space-between; align-items: center; }
-  .card-sub { font-size: 12px; color: var(--muted); line-height: 1.4; }
-  .badge { font-size: 10px; padding: 2px 7px; border-radius: 999px; background: rgba(56,189,248,0.15); color: var(--accent); font-family: monospace; }
-  .files-layout { flex: 1; display: grid; grid-template-columns: 230px 1fr; min-height: 0; }
-  .file-list { border-right: 1px solid var(--border); overflow-y: auto; padding: 8px; background: var(--surface); }
-  .file-item { padding: 7px 9px; border-radius: 6px; cursor: pointer; font-family: monospace; font-size: 12px; color: #CBD5E1; word-break: break-all; }
-  .file-item:hover, .file-item.active { background: var(--surface2); color: var(--accent); }
-  .editor-pane { display: flex; flex-direction: column; min-height: 0; }
-  .editor-header { padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-  textarea#editor { flex: 1; width: 100%; border: none; border-radius: 0; font-family: monospace; font-size: 12px; line-height: 1.5; resize: none; padding: 12px; }
-  @media (max-width: 760px) {
-    .files-layout { grid-template-columns: 1fr; grid-template-rows: 150px 1fr; }
-    .file-list { border-right: none; border-bottom: 1px solid var(--border); }
+        private const val LAPTOP_WEB_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" /><title>AndroidHarness</title><link rel="icon" href="/api/app-icon.png" /><link rel="apple-touch-icon" href="/api/app-icon.png" /><!--__HARNESS_BOOT__--><style>
+  :root {
+    color-scheme: dark;
+    --bg: #111318;
+    --surface-lowest: #0C0E13;
+    --surface-low: #191C21;
+    --surface: #1D2025;
+    --surface-high: #272A30;
+    --surface-highest: #32353B;
+    --primary: #A8C7FA;
+    --on-primary: #062168;
+    --primary-container: #0B57D0;
+    --on-primary-container: #D1E4FF;
+    --secondary: #BCC7DC;
+    --secondary-container: #3C4758;
+    --on-secondary-container: #D8E3F9;
+    --on-surface: #E2E2E9;
+    --on-surface-variant: #C4C6D0;
+    --outline: #8E9099;
+    --outline-variant: #44474E;
+    --error: #FFB4AB;
+    --error-container: #93000A;
+    --success: #4ADE80;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    font-family: 'Google Sans', Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--on-surface);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  /* Native MainHeader */
+  .main-header {
+    display: flex; align-items: center; gap: 6px;
+    min-height: 52px; padding: 6px 10px;
+    background: var(--bg); border-bottom: 1px solid rgba(68,71,78,0.45);
+    flex-shrink: 0; z-index: 20;
+  }
+  body.overlay-mode .main-header { min-height: 44px; padding: 4px 8px; }
+  .icon-btn {
+    width: 38px; height: 38px; border-radius: 50%; border: none;
+    background: transparent; color: var(--on-surface);
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; flex-shrink: 0; transition: background 0.15s;
+  }
+  body.overlay-mode .icon-btn { width: 32px; height: 32px; }
+  .icon-btn:hover, .icon-btn:active { background: var(--surface-high); }
+  .icon-btn.active-toggle { background: var(--primary-container); color: var(--on-primary-container); }
+  .header-center {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden;
+  }
+  .model-picker-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    max-width: 100%; padding: 6px 12px; border-radius: 999px;
+    background: var(--surface-low); border: 1px solid var(--outline-variant);
+    color: var(--on-surface); font-size: 13px; font-weight: 600;
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  body.overlay-mode .model-picker-pill { padding: 4px 9px; font-size: 11.5px; }
+  .model-picker-pill .model-sub { color: var(--primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+  .thinking-pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 5px 9px; border-radius: 999px;
+    background: var(--surface-low); border: 1px solid var(--outline-variant);
+    color: var(--on-surface-variant); font-size: 11px; font-weight: 600;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .thinking-pill.on { background: rgba(11,87,208,0.28); border-color: var(--primary); color: var(--primary); }
+
+  /* Reconnect / Status Banner */
+  .reconnect-bar {
+    display: none; align-items: center; justify-content: space-between;
+    padding: 6px 12px; background: var(--error-container); color: #FFDAD6;
+    font-size: 12px; flex-shrink: 0;
+  }
+  .reconnect-bar.show { display: flex; }
+
+  /* Slide-out Navigation Drawer (1:1 with native AndroidHarness Drawer) */
+  .drawer-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.62);
+    opacity: 0; pointer-events: none; transition: opacity 0.2s ease; z-index: 90;
+  }
+  .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+  .nav-drawer {
+    position: fixed; top: 0; bottom: 0; left: 0;
+    width: min(310px, 86vw); background: var(--surface-lowest);
+    border-right: 1px solid var(--outline-variant);
+    transform: translateX(-102%); transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
+    z-index: 100; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .nav-drawer.open { transform: translateX(0); }
+  .drawer-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px 10px; border-bottom: 1px solid rgba(68,71,78,0.4);
+  }
+  .app-logo-img {
+    width: 34px; height: 34px; border-radius: 10px; object-fit: cover;
+    background: var(--primary-container); flex-shrink: 0;
+  }
+  .drawer-actions {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 14px 8px;
+  }
+  .btn-primary-tonal {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 9px 12px; border-radius: 12px; border: 1px solid rgba(168,199,250,0.25);
+    background: var(--primary-container); color: var(--on-primary-container);
+    font-size: 12.5px; font-weight: 600; cursor: pointer;
+  }
+  .btn-secondary-tonal {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 9px 12px; border-radius: 12px; border: 1px solid var(--outline-variant);
+    background: var(--surface); color: var(--on-surface);
+    font-size: 12.5px; font-weight: 600; cursor: pointer;
+  }
+  .drawer-scroll { flex: 1; overflow-y: auto; padding: 6px 10px 14px; }
+  .drawer-section-label {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--on-surface-variant); padding: 10px 8px 6px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .team-mini-item {
+    display: flex; align-items: center; gap: 9px; padding: 7px 9px;
+    border-radius: 10px; cursor: pointer; margin-bottom: 3px;
+    color: var(--on-surface); font-size: 12.5px;
+  }
+  .team-mini-item:hover, .team-mini-item.active { background: var(--surface-high); }
+  .team-mini-badge {
+    width: 26px; height: 26px; border-radius: 8px;
+    background: rgba(11,87,208,0.35); color: var(--primary);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 13px; flex-shrink: 0;
+  }
+  .session-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 9px 10px; border-radius: 10px; cursor: pointer; margin-bottom: 3px;
+    color: var(--on-surface-variant); font-size: 13px;
+  }
+  .session-row:hover { background: var(--surface); color: var(--on-surface); }
+  .session-row.active { background: var(--surface-high); color: var(--primary); font-weight: 600; }
+  .drawer-footer {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+    padding: 10px 12px; border-top: 1px solid rgba(68,71,78,0.45);
+    background: var(--surface-low);
+  }
+  .drawer-foot-btn {
+    padding: 8px 6px; border-radius: 10px; border: 1px solid var(--outline-variant);
+    background: var(--surface); color: var(--on-surface); font-size: 11.5px; font-weight: 600;
+    cursor: pointer; text-align: center;
+  }
+
+  /* Main Chat Stream & Native EmptyState */
+  .chat-viewport {
+    flex: 1; min-height: 0; overflow-y: auto; padding: 14px 14px 10px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  body.overlay-mode .chat-viewport { padding: 10px 10px 6px; gap: 10px; }
+  .empty-state-wrap {
+    margin: auto; width: 100%; max-width: 480px;
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    padding: 18px 8px;
+  }
+  .empty-logo {
+    width: 56px; height: 56px; border-radius: 16px; margin-bottom: 14px;
+    box-shadow: 0 6px 24px rgba(11,87,208,0.35); object-fit: cover;
+  }
+  body.overlay-mode .empty-logo { width: 42px; height: 42px; border-radius: 12px; margin-bottom: 8px; }
+  .empty-headline {
+    font-size: 22px; font-weight: 600; color: var(--on-surface); margin: 0 0 8px;
+    letter-spacing: -0.2px;
+  }
+  body.overlay-mode .empty-headline { font-size: 17px; margin-bottom: 4px; }
+  .empty-sub {
+    font-size: 13.5px; color: var(--on-surface-variant); margin: 0 0 18px; line-height: 1.45;
+  }
+  body.overlay-mode .empty-sub { font-size: 12px; margin-bottom: 12px; }
+  .suggestion-list {
+    width: 100%; background: var(--surface-low); border: 1px solid rgba(68,71,78,0.5);
+    border-radius: 16px; overflow: hidden; text-align: left;
+  }
+  .suggestion-item {
+    display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+    color: var(--on-surface); font-size: 13.5px; cursor: pointer;
+    border-bottom: 1px solid rgba(68,71,78,0.35); background: transparent;
+    width: 100%; border-left: none; border-right: none; border-top: none; text-align: left;
+  }
+  body.overlay-mode .suggestion-item { padding: 9px 11px; font-size: 12px; }
+  .suggestion-item:last-child { border-bottom: none; }
+  .suggestion-item:hover { background: var(--surface-high); }
+  .suggestion-item .sug-icon { color: var(--primary); font-size: 15px; flex-shrink: 0; }
+  .suggestion-item .sug-text { flex: 1; }
+  .suggestion-item .sug-arrow { color: var(--outline); font-size: 14px; }
+
+  /* Developer Team Horizontal Quick Bar in EmptyState */
+  .dev-team-strip {
+    display: flex; gap: 6px; width: 100%; overflow-x: auto; padding-bottom: 10px; margin-bottom: 6px;
+  }
+  .dev-pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px;
+    border-radius: 999px; background: var(--surface); border: 1px solid var(--outline-variant);
+    color: var(--on-surface); font-size: 11.5px; font-weight: 500; white-space: nowrap; cursor: pointer;
+  }
+  .dev-pill.active { background: var(--primary-container); border-color: var(--primary); color: var(--on-primary-container); }
+
+  /* Native Bubbles & Turn Layout */
+  .msg-row { display: flex; flex-direction: column; width: 100%; }
+  .msg-user {
+    align-self: flex-end; max-width: 85%;
+    background: var(--primary-container); color: var(--on-primary-container);
+    padding: 10px 14px; border-radius: 18px 18px 4px 18px;
+    font-size: 14px; line-height: 1.48; white-space: pre-wrap; word-break: break-word;
+  }
+  body.overlay-mode .msg-user { font-size: 13px; padding: 8px 12px; }
+  .msg-assistant {
+    align-self: flex-start; width: 100%; max-width: 100%;
+    color: var(--on-surface); font-size: 14px; line-height: 1.55;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  body.overlay-mode .msg-assistant { font-size: 13px; }
+  .assistant-header {
+    display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--on-surface-variant); font-weight: 600;
+  }
+  .assistant-header img { width: 18px; height: 18px; border-radius: 5px; }
+
+  /* Native ThinkingBlock */
+  .thinking-card {
+    background: var(--surface-low); border: 1px solid rgba(68,71,78,0.55);
+    border-radius: 12px; overflow: hidden;
+  }
+  .thinking-summary {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; font-size: 12px; color: var(--on-surface-variant);
+    cursor: pointer; user-select: none; font-weight: 500;
+  }
+  .thinking-body {
+    display: none; padding: 8px 12px 10px; border-top: 1px solid rgba(68,71,78,0.35);
+    font-size: 12px; color: var(--on-surface-variant); white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 220px; overflow-y: auto;
+  }
+  .thinking-card.open .thinking-body { display: block; }
+
+  /* Native SubagentPagerCard (6-Developer AI Specialist Team Pager Card) */
+  .subagent-pager-card {
+    background: var(--surface-low); border: 1px solid rgba(68,71,78,0.65);
+    border-radius: 16px; overflow: hidden; width: 100%;
+  }
+  .subagent-pager-head {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+    border-bottom: 1px solid rgba(68,71,78,0.4);
+  }
+  .subagent-icon-box {
+    width: 30px; height: 30px; border-radius: 9px; background: var(--surface-high);
+    color: var(--primary); display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; flex-shrink: 0;
+  }
+  .subagent-tabs {
+    display: flex; gap: 6px; padding: 8px 10px; overflow-x: auto;
+    border-bottom: 1px solid rgba(68,71,78,0.35); background: rgba(12,14,19,0.4);
+  }
+  .subagent-tab {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 5px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+    background: var(--surface); color: var(--on-surface-variant);
+    border: 1px solid transparent; cursor: pointer; white-space: nowrap;
+  }
+  .subagent-tab.active {
+    background: rgba(11,87,208,0.28); border-color: var(--primary); color: var(--on-surface);
+  }
+  .subagent-page-body {
+    padding: 10px 12px; font-size: 12.5px; line-height: 1.48; color: var(--on-surface);
+    max-height: 210px; overflow-y: auto; white-space: pre-wrap;
+  }
+  .subagent-meta {
+    font-size: 11px; color: var(--primary); font-family: monospace; margin-bottom: 4px;
+  }
+
+  /* Markdown Code Blocks */
+  .code-block {
+    background: var(--surface-lowest); border: 1px solid var(--outline-variant);
+    border-radius: 12px; overflow: hidden; margin: 6px 0;
+  }
+  .code-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 10px; background: var(--surface-low); border-bottom: 1px solid rgba(68,71,78,0.4);
+    font-size: 11px; color: var(--on-surface-variant); font-family: monospace;
+  }
+  .code-pre {
+    margin: 0; padding: 10px 12px; overflow-x: auto; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #E2E8F0;
+  }
+
+  /* Live Progress & Blocking Prompt Cards */
+  .live-status-strip {
+    display: none; align-items: center; justify-content: space-between; gap: 8px;
+    margin: 0 12px 6px; padding: 8px 12px; border-radius: 12px;
+    background: var(--surface); border: 1px solid rgba(168,199,250,0.35);
+    font-size: 12px; color: var(--primary); flex-shrink: 0;
+  }
+  .live-status-strip.active { display: flex; }
+  .pulse-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--primary);
+    animation: pulseAnim 1.2s infinite ease-in-out; display: inline-block;
+  }
+  @keyframes pulseAnim { 0%, 100% { opacity: 0.35; transform: scale(0.9); } 50% { opacity: 1; transform: scale(1.15); } }
+
+  .approval-card {
+    display: none; margin: 0 12px 8px; padding: 12px; border-radius: 14px;
+    background: #1B2234; border: 1px solid var(--primary); font-size: 12.5px; flex-shrink: 0;
+  }
+  .approval-card.active { display: block; }
+
+  /* Native MessageComposer Capsule */
+  .composer-outer {
+    padding: 6px 12px 10px; background: var(--bg); flex-shrink: 0;
+  }
+  body.overlay-mode .composer-outer { padding: 4px 8px 6px; }
+  .composer-capsule {
+    background: var(--surface-low); border: 1px solid var(--outline-variant);
+    border-radius: 24px; padding: 8px 10px 8px 14px;
+    display: flex; flex-direction: column; gap: 6px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+  }
+  .composer-top-pills {
+    display: flex; align-items: center; gap: 6px; overflow-x: auto;
+  }
+  .mini-pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600;
+    background: var(--surface-high); color: var(--on-surface-variant);
+    border: 1px solid transparent; cursor: pointer; white-space: nowrap;
+  }
+  .mini-pill.active { background: rgba(11,87,208,0.3); border-color: var(--primary); color: var(--primary); }
+  .composer-input-row {
+    display: flex; align-items: flex-end; gap: 6px;
+  }
+  .composer-textarea {
+    flex: 1; background: transparent; border: none; outline: none;
+    color: var(--on-surface); font-size: 14.5px; line-height: 1.4;
+    resize: none; max-height: 120px; min-height: 24px; padding: 4px 0;
+    font-family: inherit;
+  }
+  body.overlay-mode .composer-textarea { font-size: 13px; max-height: 76px; }
+  .composer-textarea::placeholder { color: var(--outline); }
+  .send-circle-btn {
+    width: 36px; height: 36px; border-radius: 50%; border: none;
+    background: var(--primary); color: var(--on-primary);
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; flex-shrink: 0; font-weight: 700; font-size: 16px;
+  }
+  .send-circle-btn.stop { background: var(--error); color: #690005; }
+
+  /* Native-Parity Modal Bottom Sheets (Workspace Files, Models, Team, Settings) */
+  .sheet-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+    display: none; align-items: flex-end; justify-content: center; z-index: 120;
+  }
+  .sheet-backdrop.open { display: flex; }
+  .modal-sheet {
+    width: 100%; max-width: 680px; height: 84vh;
+    background: var(--surface-low); border-top: 1px solid var(--outline-variant);
+    border-radius: 22px 22px 0 0; display: flex; flex-direction: column; overflow: hidden;
+  }
+  body.overlay-mode .modal-sheet { height: 92vh; }
+  .sheet-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid rgba(68,71,78,0.45);
+  }
+  .sheet-title { font-size: 15px; font-weight: 600; color: var(--on-surface); }
+  .sheet-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+
+  /* Workspace File Manager & Editor inside Sheet */
+  .workspace-split { display: flex; flex: 1; min-height: 0; gap: 10px; flex-direction: column; }
+  @media (min-width: 640px) { .workspace-split { flex-direction: row; } }
+  .file-list-pane {
+    max-height: 190px; overflow-y: auto; background: var(--surface-lowest);
+    border: 1px solid var(--outline-variant); border-radius: 12px; padding: 6px;
+  }
+  @media (min-width: 640px) { .file-list-pane { width: 230px; max-height: none; } }
+  .file-entry {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 9px; border-radius: 8px; font-size: 12px; font-family: monospace;
+    color: var(--on-surface-variant); cursor: pointer; word-break: break-all;
+  }
+  .file-entry:hover, .file-entry.active { background: var(--surface-high); color: var(--primary); }
+  .editor-pane { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 220px; }
+  .code-editor-input {
+    flex: 1; width: 100%; background: var(--surface-lowest); color: #E2E8F0;
+    border: 1px solid var(--outline-variant); border-radius: 12px; padding: 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; resize: none;
+  }
+  .card-item {
+    background: var(--surface); border: 1px solid rgba(68,71,78,0.55);
+    border-radius: 14px; padding: 12px;
   }
 </style></head><body>
-<header>
-  <div class="brand">
-    <span class="brand-logo">AH</span>
-    <span>AndroidHarness</span>
-    <span id="sessionBadge" class="badge">Shared Session</span>
-  </div>
-  <div id="connPill" class="status-pill"><span class="dot"></span><span id="connText">Connecting...</span></div>
-</header>
-<div id="reconnectBanner" class="reconnect-banner">Connection interrupted — automatically reconnecting to AndroidHarness bridge...</div>
-<nav class="nav-bar">
-  <button class="nav-btn active" onclick="switchView('chat', this)">Chat</button>
-  <button class="nav-btn" onclick="switchView('team', this)">AI Team (3)</button>
-  <button class="nav-btn" onclick="switchView('sessions', this)">Chats</button>
-  <button class="nav-btn" onclick="switchView('files', this)">Workspace</button>
-  <button class="nav-btn" onclick="switchView('settings', this)">Models & Settings</button>
-</nav>
 
-<section id="view-chat" class="view-container active">
-  <div class="chat-toolbar">
-    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-      <select id="modeSelect" class="chip" title="Agent Execution Mode">
-        <option value="ACT">Mode: ACT (Full Tools)</option>
-        <option value="PLAN">Mode: PLAN (Read-Only)</option>
-      </select>
-      <span id="activeModelLabel" class="chip" onclick="switchView('settings', document.querySelectorAll('.nav-btn')[4])">Model: loading...</span>
+  <!-- Slide-out Navigation Drawer (Matches Native Phone App) -->
+  <div class="drawer-backdrop" id="drawerBackdrop" onclick="toggleDrawer(false)"></div>
+  <aside class="nav-drawer" id="navDrawer" aria-label="Navigation Drawer">
+    <div class="drawer-header">
+      <img id="drawerLogo" class="app-logo-img" src="/api/app-icon.png" alt="AndroidHarness" />
+      <div style="min-width:0;flex:1;">
+        <div style="font-weight:700;font-size:15px;color:var(--on-surface);">AndroidHarness</div>
+        <div id="drawerWorkspacePath" style="font-size:11px;color:var(--on-surface-variant);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Workspace ready</div>
+      </div>
+      <button class="icon-btn" onclick="toggleDrawer(false)" aria-label="Close drawer">✕</button>
     </div>
-    <div style="display:flex;gap:6px;align-items:center;">
-      <button class="chip" id="ttsToggleBtn" onclick="toggleAutoSpeak()">TTS: Off</button>
-      <button class="chip" onclick="newSharedSession()">+ New Chat</button>
+    <div class="drawer-actions">
+      <button class="btn-primary-tonal" onclick="createNewSession('', 'CODE')">＋ New Code</button>
+      <button class="btn-secondary-tonal" onclick="createNewSession('', 'CHAT')">💬 New Chat</button>
     </div>
-  </div>
-  <div id="approvalCard" class="prompt-card"></div>
-  <div id="chatMessages" class="chat-messages"></div>
-  <div id="liveBar" class="live-bar">
-    <span id="liveStatusText">Working...</span>
-    <button class="btn danger" style="padding:4px 10px;font-size:11px;" onclick="stopRun()">Stop</button>
-  </div>
-  <div class="chat-input-bar">
-    <button class="btn secondary" id="voiceBtn" onclick="startVoiceInput()" title="Voice Input">Mic</button>
-    <input type="text" id="promptInput" placeholder="Message AndroidHarness (synced with phone & bubble)..." onkeydown="if(event.key==='Enter')sendChat()" />
-    <button class="btn" id="sendBtn" onclick="sendChat()">Send</button>
-  </div>
-</section>
+    <div class="drawer-scroll">
+      <div class="drawer-section-label">
+        <span>AI Specialist Dev Team (6)</span>
+        <button class="mini-pill" onclick="openSheet('teamSheet');toggleDrawer(false);">Manage</button>
+      </div>
+      <div id="drawerTeamList"></div>
 
-<section id="view-team" class="view-container">
-  <div class="scroll-pane">
-    <div class="card" style="border-color:rgba(56,189,248,0.35);">
-      <div class="card-title"><span>Persistent AI Specialist Team</span><span class="badge">Synchronized</span></div>
-      <div class="card-sub">Your configured AI specialists persist across sessions, app restarts, the floating overlay, and remote browsers without duplicating roles.</div>
+      <div class="drawer-section-label" style="margin-top:8px;">
+        <span>Conversations</span>
+        <span id="drawerSessionCount" style="font-weight:400;">0</span>
+      </div>
+      <div id="drawerSessionList"></div>
     </div>
-    <div id="teamList" style="display:flex;flex-direction:column;gap:10px;"></div>
-  </div>
-</section>
-
-<section id="view-sessions" class="view-container">
-  <div class="scroll-pane">
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-      <strong style="font-size:13px;">Shared Conversations (SessionRepository)</strong>
-      <button class="btn" onclick="newSharedSession()">+ New Shared Chat</button>
+    <div class="drawer-footer">
+      <button class="drawer-foot-btn" onclick="openSheet('filesSheet');toggleDrawer(false);">📁 Files</button>
+      <button class="drawer-foot-btn" onclick="openSheet('modelsSheet');toggleDrawer(false);">⚡ Models</button>
+      <button class="drawer-foot-btn" onclick="openSheet('settingsSheet');toggleDrawer(false);">⚙️ Settings</button>
     </div>
-    <div id="sessionsList" style="display:flex;flex-direction:column;gap:8px;"></div>
-  </div>
-</section>
+  </aside>
 
-<section id="view-files" class="view-container">
-  <div class="files-layout">
-    <div class="file-list" id="fileList"></div>
-    <div class="editor-pane">
-      <div class="editor-header">
-        <span id="currentFile" style="font-family:monospace;font-size:12px;color:var(--muted);">Select or create a workspace file</span>
+  <!-- Native MainHeader -->
+  <header class="main-header">
+    <button class="icon-btn" onclick="toggleDrawer(true)" aria-label="Open navigation">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+    <div class="header-center">
+      <button class="model-picker-pill" id="headerModelBtn" onclick="openSheet('modelsSheet')" title="Switch AI Provider & Model">
+        <span id="headerSessionLabel">AndroidHarness</span>
+        <span style="color:var(--outline);">·</span>
+        <span class="model-sub" id="headerModelLabel">Loading…</span>
+        <span style="font-size:10px;color:var(--outline);">▾</span>
+      </button>
+      <button class="thinking-pill" id="headerThinkingBtn" onclick="cycleThinkingLevel()" title="Cycle Thinking Effort">
+        🧠 <span id="headerThinkingLabel">OFF</span>
+      </button>
+    </div>
+    <button class="icon-btn" onclick="openSheet('filesSheet')" title="Workspace Files" aria-label="Workspace files">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+    </button>
+    <button class="icon-btn" id="headerVoiceToggle" onclick="toggleAlwaysSpeak()" title="1-Tap Auto-Speak Replies" aria-label="Toggle voice output">
+      🔊
+    </button>
+    <button class="icon-btn" onclick="openSheet('settingsSheet')" title="Settings & AI Specialist Team" aria-label="Settings">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </header>
+
+  <div class="reconnect-bar" id="reconnectBar">
+    <span id="reconnectMsg">Reconnecting to AndroidHarness background service…</span>
+    <button class="mini-pill" onclick="syncState()">Retry Now</button>
+  </div>
+
+  <!-- Main Chat Viewport -->
+  <main class="chat-viewport" id="chatViewport"></main>
+
+  <!-- Live Run Progress & Blocking Approval/Question Cards -->
+  <div class="live-status-strip" id="liveStatusStrip">
+    <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+      <span class="pulse-dot"></span>
+      <span id="liveStatusText" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Thinking…</span>
+    </div>
+    <button class="mini-pill" style="background:var(--error-container);color:#FFDAD6;" onclick="controlRun('stop')">■ Stop</button>
+  </div>
+  <div class="approval-card" id="approvalCard"></div>
+
+  <!-- Native MessageComposer Capsule -->
+  <div class="composer-outer">
+    <div class="composer-capsule">
+      <div class="composer-top-pills">
+        <button class="mini-pill active" id="modeActPill" onclick="setAgentMode('ACT')">⚡ ACT</button>
+        <button class="mini-pill" id="modePlanPill" onclick="setAgentMode('PLAN')">🧭 PLAN</button>
+        <button class="mini-pill" id="specialistSelectorPill" onclick="openSheet('teamSheet')">👥 Team: All 6 Devs ▾</button>
+        <button class="mini-pill" onclick="openSheet('filesSheet')">📁 Workspace</button>
+      </div>
+      <div class="composer-input-row">
+        <textarea class="composer-textarea" id="promptInput" rows="1" placeholder="Ask AndroidHarness or build with your 6-Developer AI Team…"></textarea>
+        <button class="icon-btn" id="micBtn" onclick="toggleVoiceInput()" title="Voice Dictation" aria-label="Voice input">🎙️</button>
+        <button class="send-circle-btn" id="sendBtn" onclick="handleSendOrStop()" aria-label="Send message">↑</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sheet 1: Workspace Files & Code Editor -->
+  <div class="sheet-backdrop" id="filesSheet" onclick="if(event.target===this)closeSheets()">
+    <div class="modal-sheet">
+      <div class="sheet-header">
+        <div>
+          <div class="sheet-title">📁 Workspace File Explorer & Code Editor</div>
+          <div id="sheetWorkspacePath" style="font-size:11px;color:var(--on-surface-variant);font-family:monospace;"></div>
+        </div>
         <div style="display:flex;gap:6px;">
-          <button class="btn secondary" onclick="createNewFilePrompt()">+ New File</button>
-          <button class="btn" onclick="saveFile()">Save</button>
+          <button class="mini-pill" onclick="promptNewFile()">＋ New File</button>
+          <button class="mini-pill" onclick="refreshFiles()">↻ Refresh</button>
+          <button class="icon-btn" onclick="closeSheets()">✕</button>
         </div>
       </div>
-      <textarea id="editor" placeholder="// Select a file on the left or click '+ New File' to edit files inside the AndroidHarness workspace..."></textarea>
+      <div class="sheet-body">
+        <div class="workspace-split">
+          <div class="file-list-pane" id="fileListPane">Loading workspace files…</div>
+          <div class="editor-pane">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <span id="editingFileName" style="font-size:12px;font-family:monospace;color:var(--primary);">Select a file to inspect or edit</span>
+              <button class="btn-primary-tonal" style="padding:6px 12px;" onclick="saveActiveFile()">💾 Save Changes</button>
+            </div>
+            <textarea class="code-editor-input" id="fileEditorContent" placeholder="File contents will appear here…"></textarea>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
-</section>
 
-<section id="view-settings" class="view-container">
-  <div class="scroll-pane">
-    <div class="card">
-      <div class="card-title"><span>Active Provider & Model Selection</span><span class="badge">Live Engine</span></div>
-      <div class="card-sub">Select any configured provider and model. API keys remain securely inside Android Keystore and are never exposed to the browser.</div>
-      <div id="providersList" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;"></div>
-    </div>
-    <div class="card">
-      <div class="card-title"><span>Engine & Permission Settings</span></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">
-        <div>
-          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px;">Permission Mode</label>
-          <select id="permSelect" style="width:100%;" onchange="saveSettings()">
-            <option value="CONFIRM_ALL">Confirm All</option>
-            <option value="CONFIRM_RISKY">Confirm Risky</option>
-            <option value="FULL_AUTO">Full Auto</option>
-            <option value="FULL_ACCESS">Full Access</option>
-          </select>
-        </div>
-        <div>
-          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px;">Thinking Level</label>
-          <select id="thinkingSelect" style="width:100%;" onchange="saveSettings()">
-            <option value="OFF">Off</option>
-            <option value="LOW">Low</option>
-            <option value="MEDIUM">Medium</option>
-            <option value="HIGH">High</option>
-          </select>
-        </div>
+  <!-- Sheet 2: AI Providers & Models -->
+  <div class="sheet-backdrop" id="modelsSheet" onclick="if(event.target===this)closeSheets()">
+    <div class="modal-sheet">
+      <div class="sheet-header">
+        <div class="sheet-title">⚡ AI Providers, Free Models & Quota Status</div>
+        <button class="icon-btn" onclick="closeSheets()">✕</button>
       </div>
-    </div>
-    <div class="card">
-      <div class="card-title"><span>Architecture & Network Scope</span><span class="badge">Parity Boundary</span></div>
-      <div class="card-sub">This Complete Web Client connects directly to AndroidHarness's native AppContainer, AgentEngine, RunManager, and SessionRepository over authenticated local HTTP (Wi-Fi LAN, Hotspot, USB Tethering, or local Overlay loopback).</div>
+      <div class="sheet-body" id="modelsSheetBody"></div>
     </div>
   </div>
-</section>
+
+  <!-- Sheet 3: 6-Developer AI Specialist Team -->
+  <div class="sheet-backdrop" id="teamSheet" onclick="if(event.target===this)closeSheets()">
+    <div class="modal-sheet">
+      <div class="sheet-header">
+        <div class="sheet-title">👥 Persistent 6-Developer AI Specialist Team</div>
+        <button class="icon-btn" onclick="closeSheets()">✕</button>
+      </div>
+      <div class="sheet-body" id="teamSheetBody"></div>
+    </div>
+  </div>
+
+  <!-- Sheet 4: App & Runtime Settings -->
+  <div class="sheet-backdrop" id="settingsSheet" onclick="if(event.target===this)closeSheets()">
+    <div class="modal-sheet">
+      <div class="sheet-header">
+        <div class="sheet-title">⚙️ AndroidHarness Settings & Background Keepalive</div>
+        <button class="icon-btn" onclick="closeSheets()">✕</button>
+      </div>
+      <div class="sheet-body" id="settingsSheetBody"></div>
+    </div>
+  </div>
 
 <script>
-  const params = new URLSearchParams(window.location.search);
-  const urlToken = params.get('token');
-  if (params.get('overlay') === '1') {
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('overlay') === '1' || window.__HARNESS_OVERLAY__ === true) {
     document.body.classList.add('overlay-mode');
   }
+  const urlToken = urlParams.get('token');
   if (urlToken) {
-    sessionStorage.setItem('ah_bridge_token', urlToken);
-    const cleanUrl = window.location.pathname + (params.get('overlay') === '1' ? '?overlay=1' : '');
-    window.history.replaceState({}, document.title, cleanUrl);
+    localStorage.setItem('harness_bridge_token', urlToken);
+  } else if (window.__HARNESS_BOOT_TOKEN__) {
+    localStorage.setItem('harness_bridge_token', window.__HARNESS_BOOT_TOKEN__);
   }
-  const bridgeToken = sessionStorage.getItem('ah_bridge_token') || '';
-  function apiFetch(url, options = {}) {
-    const headers = Object.assign({}, options.headers || {}, {
-      'Authorization': 'Bearer ' + bridgeToken
+
+  let appState = null;
+  let currentMode = 'ACT';
+  let selectedSpecialistId = '';
+  let currentEditingFile = '';
+  let subagentActiveTabByMsg = {};
+  let expandedThinkingIds = {};
+  let lastSpokenText = '';
+  let isSyncing = false;
+
+  function getAuthToken() {
+    return window.__HARNESS_BOOT_TOKEN__ || localStorage.getItem('harness_bridge_token') || '';
+  }
+
+  async function apiFetch(path, options = {}) {
+    const method = (options.method || 'GET').toUpperCase();
+    const bodyStr = options.body || '';
+    // Fast 0ms in-process path when running inside FloatingBubbleService WebView
+    if (window.HarnessNative && typeof window.HarnessNative.request === 'function') {
+      try {
+        const raw = window.HarnessNative.request(method, path, bodyStr);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          document.getElementById('reconnectBar').classList.remove('show');
+          return parsed;
+        }
+      } catch (e) {
+        console.warn('HarnessNative fallback to HTTP:', e);
+      }
+    }
+    const headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+    const token = getAuthToken();
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const res = await fetch(path, Object.assign({}, options, { headers }));
+    if (res.status === 401) {
+      const entered = prompt('Enter the pairing token shown on your phone in AndroidHarness → Connect Device:');
+      if (entered) {
+        localStorage.setItem('harness_bridge_token', entered.trim());
+        return apiFetch(path, options);
+      }
+      throw new Error('Unauthorized (401)');
+    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    document.getElementById('reconnectBar').classList.remove('show');
+    return data;
+  }
+
+  function escapeHtml(str) {
+    return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function formatRichText(raw) {
+    if (!raw) return '';
+    const parts = String(raw).split(/```(\w*)\n([\s\S]*?)```/g);
+    let html = '';
+    for (let i = 0; i < parts.length; i += 3) {
+      const prose = escapeHtml(parts[i]);
+      html += prose.replace(/`([^`\n]+)`/g, '<code style="background:var(--surface-high);padding:1px 5px;border-radius:5px;font-family:monospace;font-size:12px;">${'$'}1</code>');
+      if (i + 2 < parts.length) {
+        const lang = escapeHtml(parts[i + 1] || 'code');
+        const code = parts[i + 2];
+        const encoded = encodeURIComponent(code);
+        html += `<div class="code-block"><div class="code-head"><span>${'$'}{lang}</span><div style="display:flex;gap:6px;"><button class="mini-pill" onclick="copyCodeBlock(decodeURIComponent('${'$'}{encoded}'))">Copy</button><button class="mini-pill" onclick="applyCodeToWorkspace(decodeURIComponent('${'$'}{encoded}'))">Save to File</button></div></div><pre class="code-pre">${'$'}{escapeHtml(code)}</pre></div>`;
+      }
+    }
+    return html;
+  }
+
+  function copyCodeBlock(text) {
+    if (navigator.clipboard) navigator.clipboard.writeText(text);
+  }
+
+  async function applyCodeToWorkspace(code) {
+    const filename = prompt('Save code block to workspace file path:', currentEditingFile || 'src/Output.kt');
+    if (!filename) return;
+    await apiFetch('/api/file', {
+      method: 'POST',
+      body: JSON.stringify({ name: filename.trim(), content: code })
     });
-    return fetch(url, Object.assign({}, options, { headers }));
+    currentEditingFile = filename.trim();
+    openSheet('filesSheet');
+    await refreshFiles();
+    await loadFile(currentEditingFile);
   }
 
-  let activePath = '';
-  let lastRenderedSignature = '';
-  let lastSpokenMessageId = '';
-  let autoSpeak = false;
-  let isRunning = false;
-
-  function switchView(name, btn) {
-    document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
-    document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
-    const target = document.getElementById('view-' + name);
-    if (target) target.classList.add('active');
-    if (btn) btn.classList.add('active');
-    if (name === 'files') loadFiles();
+  function toggleDrawer(open) {
+    document.getElementById('navDrawer').classList.toggle('open', !!open);
+    document.getElementById('drawerBackdrop').classList.toggle('open', !!open);
   }
 
-  function escapeHtml(s) {
-    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  function openSheet(id) {
+    closeSheets();
+    const el = document.getElementById(id);
+    if (el) el.classList.add('open');
+    if (id === 'filesSheet') refreshFiles();
+  }
+
+  function closeSheets() {
+    document.querySelectorAll('.sheet-backdrop').forEach(el => el.classList.remove('open'));
+  }
+
+  function setAgentMode(mode) {
+    currentMode = mode;
+    document.getElementById('modeActPill').classList.toggle('active', mode === 'ACT');
+    document.getElementById('modePlanPill').classList.toggle('active', mode === 'PLAN');
+  }
+
+  function selectSpecialistRole(id, name) {
+    selectedSpecialistId = id || '';
+    const label = id ? ('👤 ' + name + ' ▾') : '👥 Team: All 6 Devs ▾';
+    document.getElementById('specialistSelectorPill').textContent = label;
+    closeSheets();
+    renderChatViewport();
+  }
+
+  function switchSubagentTab(msgKey, idx) {
+    subagentActiveTabByMsg[msgKey] = idx;
+    renderChatViewport();
+  }
+
+  function toggleThinkingCard(id) {
+    expandedThinkingIds[id] = !expandedThinkingIds[id];
+    renderChatViewport();
+  }
+
+  function renderSubagentPagerCard(msgKey, subagents) {
+    if (!subagents || !subagents.length) return '';
+    const runningCount = subagents.filter(s => s.running).length;
+    const doneCount = subagents.filter(s => !s.running && !s.isError).length;
+    const activeIdx = Math.min(subagentActiveTabByMsg[msgKey] || 0, subagents.length - 1);
+    const activeSub = subagents[activeIdx] || subagents[0];
+    const headerTitle = runningCount > 0
+      ? `Running ${'$'}{runningCount} of ${'$'}{subagents.length} developer specialists`
+      : `Spawned ${'$'}{subagents.length} developer specialists`;
+    const headerSub = runningCount > 0 ? 'Collaborating in parallel' : `${'$'}{doneCount} completed`;
+
+    const tabsHtml = subagents.map((s, idx) => {
+      const icon = s.running ? '⏳' : (s.isError ? '⚠️' : '✓');
+      return `<button class="subagent-tab ${'$'}{idx === activeIdx ? 'active' : ''}" onclick="switchSubagentTab('${'$'}{msgKey}', ${'$'}{idx})"><span>${'$'}{icon}</span><span>${'$'}{escapeHtml(s.name)}</span></button>`;
+    }).join('');
+
+    const stepsText = (activeSub.steps && activeSub.steps.length)
+      ? activeSub.steps.map(st => '• ' + escapeHtml(st)).join('\n') + '\n\n'
+      : '';
+    const bodyText = escapeHtml(activeSub.result || (activeSub.running ? 'Generating specialist blueprint…' : 'Completed'));
+
+    return `<div class="subagent-pager-card">
+      <div class="subagent-pager-head">
+        <div class="subagent-icon-box">✨</div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:12.5px;font-weight:600;color:var(--on-surface);">${'$'}{headerTitle}</div>
+          <div style="font-size:11px;color:var(--on-surface-variant);">${'$'}{headerSub}</div>
+        </div>
+      </div>
+      <div class="subagent-tabs">${'$'}{tabsHtml}</div>
+      <div class="subagent-page-body"><div class="subagent-meta">${'$'}{escapeHtml(activeSub.name)} · ${'$'}{escapeHtml(activeSub.model || '')}</div>${'$'}{stepsText}${'$'}{bodyText}</div>
+    </div>`;
+  }
+
+  function renderChatViewport() {
+    if (!appState) return;
+    const viewport = document.getElementById('chatViewport');
+    const wasNearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 120;
+    const msgs = appState.messages || [];
+    const live = appState.live || {};
+    const iconSrc = appState.appIconDataUri || '/api/app-icon.png';
+    const team = appState.team || [];
+
+    if (msgs.length === 0 && !live.running) {
+      const teamPills = `<div class="dev-team-strip">` +
+        `<button class="dev-pill ${'$'}{!selectedSpecialistId ? 'active' : ''}" onclick="selectSpecialistRole('','All 6 Devs')">✨ All 6 Devs</button>` +
+        team.map(sp => `<button class="dev-pill ${'$'}{selectedSpecialistId === sp.id ? 'active' : ''}" onclick="selectSpecialistRole('${'$'}{sp.id}','${'$'}{escapeHtml(sp.name)}')">👨‍💻 ${'$'}{escapeHtml(sp.name)}</button>`).join('') +
+        `</div>`;
+
+      const activeSpec = team.find(t => t.id === selectedSpecialistId);
+      const headline = activeSpec ? activeSpec.name : 'What do you want to build?';
+      const subtitle = activeSpec
+        ? activeSpec.description
+        : 'Start with an idea, or build across your workspace with the 6-Developer AI Specialist Team.';
+      const suggestions = (activeSpec && activeSpec.starters && activeSpec.starters.length)
+        ? activeSpec.starters
+        : [
+            'Create a Python hello world and run it',
+            'Explore my workspace and summarize it',
+            'Build a responsive HTML landing page',
+            'Audit architecture with the 6-Developer AI Team'
+          ];
+
+      viewport.innerHTML = `<div class="empty-state-wrap">
+        <img class="empty-logo" src="${'$'}{iconSrc}" alt="AndroidHarness" />
+        <h1 class="empty-headline">${'$'}{escapeHtml(headline)}</h1>
+        <p class="empty-sub">${'$'}{escapeHtml(subtitle)}</p>
+        ${'$'}{teamPills}
+        <div class="suggestion-list">
+          ${'$'}{suggestions.map(s => `<button class="suggestion-item" onclick="sendQuickPrompt('${'$'}{escapeHtml(s).replace(/'/g, "\\'")}')"><span class="sug-icon">⚡</span><span class="sug-text">${'$'}{escapeHtml(s)}</span><span class="sug-arrow">→</span></button>`).join('')}
+        </div>
+      </div>`;
+      return;
+    }
+
+    let html = '';
+    msgs.forEach((m, idx) => {
+      const msgKey = m.id || ('m-' + idx);
+      if (m.role === 'USER') {
+        html += `<div class="msg-row"><div class="msg-user">${'$'}{escapeHtml(m.text)}</div></div>`;
+      } else if (m.role === 'ASSISTANT') {
+        const isThinkOpen = !!expandedThinkingIds[msgKey];
+        const thinkingHtml = m.thinking
+          ? `<div class="thinking-card ${'$'}{isThinkOpen ? 'open' : ''}"><div class="thinking-summary" onclick="toggleThinkingCard('${'$'}{msgKey}')"><span>🧠 Thought process ${'$'}{m.thinkingMs ? '(' + Math.max(1, Math.round(m.thinkingMs / 1000)) + 's)' : ''}</span><span>${'$'}{isThinkOpen ? '▾' : '▸'}</span></div><div class="thinking-body">${'$'}{escapeHtml(m.thinking)}</div></div>`
+          : '';
+        const subagentHtml = renderSubagentPagerCard(msgKey, m.subagents || []);
+        const toolsHtml = (m.tools && m.tools.length)
+          ? `<div style="display:flex;flex-wrap:wrap;gap:6px;">` + m.tools.map(t => `<span class="mini-pill" title="${'$'}{escapeHtml(t.args)}">🔧 ${'$'}{escapeHtml(t.name)} ${'$'}{t.isError ? '⚠️' : '✓'}</span>`).join('') + `</div>`
+          : '';
+        html += `<div class="msg-row"><div class="msg-assistant">
+          <div class="assistant-header"><img src="${'$'}{iconSrc}" alt="" /><span>AndroidHarness</span><span style="color:var(--outline);">·</span><span style="font-family:monospace;color:var(--primary);">${'$'}{escapeHtml(m.model || (appState.activeProvider && appState.activeProvider.model) || '')}</span></div>
+          ${'$'}{thinkingHtml}
+          ${'$'}{subagentHtml}
+          ${'$'}{toolsHtml}
+          ${'$'}{m.text ? `<div>${'$'}{formatRichText(m.text)}</div>` : ''}
+        </div></div>`;
+      } else if (m.role === 'TOOL' && m.text) {
+        html += `<div class="msg-row"><div class="thinking-card"><div class="thinking-summary" onclick="this.parentElement.classList.toggle('open')"><span>🔧 Tool output: ${'$'}{escapeHtml(m.toolName || 'tool')}</span><span>▸</span></div><div class="thinking-body">${'$'}{escapeHtml(m.text)}</div></div></div>`;
+      }
+    });
+
+    if (live.running && (live.streamingText || live.streamingThinking)) {
+      html += `<div class="msg-row"><div class="msg-assistant" style="border-left:2px solid var(--primary);padding-left:10px;">
+        <div class="assistant-header"><span class="pulse-dot"></span><span>Streaming live response…</span></div>
+        ${'$'}{live.streamingThinking ? `<div class="thinking-card open"><div class="thinking-body" style="display:block;">${'$'}{escapeHtml(live.streamingThinking)}</div></div>` : ''}
+        ${'$'}{live.streamingText ? `<div>${'$'}{formatRichText(live.streamingText)}</div>` : ''}
+      </div></div>`;
+    }
+
+    viewport.innerHTML = html;
+    if (wasNearBottom) viewport.scrollTop = viewport.scrollHeight;
+  }
+
+  function renderDrawerAndSheets() {
+    if (!appState) return;
+    const iconSrc = appState.appIconDataUri || '/api/app-icon.png';
+    document.getElementById('drawerLogo').src = iconSrc;
+    document.getElementById('drawerWorkspacePath').textContent = appState.workspace || '';
+    document.getElementById('sheetWorkspacePath').textContent = appState.workspace || '';
+
+    const activeProv = appState.activeProvider || {};
+    document.getElementById('headerSessionLabel').textContent = appState.sessionTitle || 'AndroidHarness';
+    document.getElementById('headerModelLabel').textContent = activeProv.model || 'Select Model';
+
+    const settings = appState.settings || {};
+    const tLevel = settings.thinkingLevel || 'OFF';
+    const thinkBtn = document.getElementById('headerThinkingBtn');
+    document.getElementById('headerThinkingLabel').textContent = tLevel;
+    thinkBtn.classList.toggle('on', tLevel !== 'OFF');
+
+    const voiceBtn = document.getElementById('headerVoiceToggle');
+    voiceBtn.classList.toggle('active-toggle', !!settings.ttsAlwaysSpeak);
+
+    const live = appState.live || {};
+    const sendBtn = document.getElementById('sendBtn');
+    if (live.running) {
+      sendBtn.classList.add('stop');
+      sendBtn.textContent = '■';
+    } else {
+      sendBtn.classList.remove('stop');
+      sendBtn.textContent = '↑';
+    }
+
+    // Drawer Team
+    const team = appState.team || [];
+    document.getElementById('drawerTeamList').innerHTML = team.map(sp => `
+      <div class="team-mini-item ${'$'}{selectedSpecialistId === sp.id ? 'active' : ''}" onclick="selectSpecialistRole('${'$'}{sp.id}','${'$'}{escapeHtml(sp.name)}');toggleDrawer(false);">
+        <div class="team-mini-badge">👨‍💻</div>
+        <div style="min-width:0;flex:1;">
+          <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${'$'}{escapeHtml(sp.name)}</div>
+          <div style="font-size:10.5px;color:var(--on-surface-variant);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${'$'}{escapeHtml(sp.model)}</div>
+        </div>
+      </div>
+    `).join('');
+
+    // Drawer Sessions
+    const sessions = appState.sessions || [];
+    document.getElementById('drawerSessionCount').textContent = String(sessions.length);
+    document.getElementById('drawerSessionList').innerHTML = sessions.map(s => `
+      <div class="session-row ${'$'}{s.active ? 'active' : ''}" onclick="selectSession('${'$'}{s.id}');toggleDrawer(false);">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${'$'}{s.kind === 'CHAT' ? '💬 ' : '💻 '}${'$'}{escapeHtml(s.title)}</span>
+        ${'$'}{s.active ? '<span style="font-size:10px;color:var(--primary);">●</span>' : ''}
+      </div>
+    `).join('');
+
+    // Live strip & Approval / Question banner
+    const liveStrip = document.getElementById('liveStatusStrip');
+    if (live.running || live.retryStatus) {
+      liveStrip.classList.add('active');
+      document.getElementById('liveStatusText').textContent = live.retryStatus || live.actionText || 'AI Specialist Team working in background…';
+    } else {
+      liveStrip.classList.remove('active');
+    }
+
+    const approvalCard = document.getElementById('approvalCard');
+    if (live.pendingApproval) {
+      approvalCard.classList.add('active');
+      approvalCard.innerHTML = `<div style="font-weight:700;color:var(--primary);margin-bottom:4px;">Permission Required: ${'$'}{escapeHtml(live.pendingApproval.tool)}</div>
+        <div style="color:var(--on-surface-variant);margin-bottom:8px;">${'$'}{escapeHtml(live.pendingApproval.description)}</div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn-primary-tonal" onclick="controlRun('approve')">Approve</button>
+          <button class="btn-secondary-tonal" onclick="controlRun('approve_always')">Always Allow</button>
+          <button class="btn-secondary-tonal" style="color:var(--error);" onclick="controlRun('deny')">Deny</button>
+        </div>`;
+    } else if (live.pendingQuestion) {
+      approvalCard.classList.add('active');
+      const opts = (live.pendingQuestion.options || []).map(o =>
+        `<button class="btn-secondary-tonal" onclick="answerPrompt('${'$'}{escapeHtml(o).replace(/'/g, "\\'")}')">${'$'}{escapeHtml(o)}</button>`
+      ).join('');
+      approvalCard.innerHTML = `<div style="font-weight:700;color:var(--primary);margin-bottom:6px;">Agent Question: ${'$'}{escapeHtml(live.pendingQuestion.question)}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">${'$'}{opts}</div>`;
+    } else {
+      approvalCard.classList.remove('active');
+    }
+
+    // Sheet 2: Providers & Models
+    const providers = appState.providers || [];
+    document.getElementById('modelsSheetBody').innerHTML = providers.map(p => {
+      const isSelectedProv = activeProv.id === p.id;
+      const modelsPills = (p.models || []).map(m => {
+        const active = isSelectedProv && activeProv.model === m.id;
+        return `<button class="mini-pill ${'$'}{active ? 'active' : ''}" style="padding:6px 10px;" onclick="selectProviderModel('${'$'}{p.id}','${'$'}{escapeHtml(m.id)}')">${'$'}{escapeHtml(m.id)}${'$'}{m.free ? ' · FREE' : ''}</button>`;
+      }).join('');
+      return `<div class="card-item" style="border-color:${'$'}{isSelectedProv ? 'var(--primary)' : 'rgba(68,71,78,0.55)'}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <strong style="font-size:14px;">${'$'}{escapeHtml(p.name)}</strong>
+          <span class="mini-pill" style="color:${'$'}{p.hasKey ? 'var(--success)' : 'var(--on-surface-variant)'}">${'$'}{p.hasKey ? '✓ Ready' : 'Key Required'}</span>
+        </div>
+        <div style="font-size:11.5px;color:var(--on-surface-variant);margin-bottom:8px;">${'$'}{escapeHtml(p.rateLimitSummary || '')}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">${'$'}{modelsPills}</div>
+      </div>`;
+    }).join('');
+
+    // Sheet 3: 6-Developer AI Specialist Team
+    document.getElementById('teamSheetBody').innerHTML = `<div class="card-item" style="display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div style="font-weight:700;">All 6 Developers (Parallel Multi-Agent Mode)</div>
+        <div style="font-size:12px;color:var(--on-surface-variant);">Spawns all 6 specialized developers simultaneously on complex coding & architecture tasks.</div>
+      </div>
+      <button class="btn-primary-tonal" onclick="selectSpecialistRole('','All 6 Devs')">Use Full Team</button>
+    </div>` + team.map(sp => `
+      <div class="card-item">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+          <div>
+            <div style="font-weight:700;font-size:14px;color:var(--primary);">👨‍💻 ${'$'}{escapeHtml(sp.name)}</div>
+            <div style="font-size:11.5px;color:var(--on-surface-variant);margin:2px 0 6px;">${'$'}{escapeHtml(sp.persona)}</div>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button class="mini-pill active" onclick="selectSpecialistRole('${'$'}{sp.id}','${'$'}{escapeHtml(sp.name)}')">Focus Role</button>
+            <button class="mini-pill" onclick="createNewSession('${'$'}{sp.id}','CHAT');closeSheets();">New Chat</button>
+          </div>
+        </div>
+        <div style="font-size:12.5px;color:var(--on-surface);margin-bottom:6px;">${'$'}{escapeHtml(sp.description)}</div>
+        <div style="font-size:11px;font-family:monospace;color:var(--on-surface-variant);">Model: ${'$'}{escapeHtml(sp.providerId)} · ${'$'}{escapeHtml(sp.model)}</div>
+      </div>
+    `).join('');
+
+    // Sheet 4: Settings
+    document.getElementById('settingsSheetBody').innerHTML = `
+      <div class="card-item">
+        <div style="font-weight:700;margin-bottom:6px;">🔋 Background Execution & Bridge Keepalive</div>
+        <div style="font-size:12px;color:var(--on-surface-variant);margin-bottom:10px;">Keeps AI generation, foreground service WakeLock, and LAN bridge alive when switching apps or minimizing AndroidHarness.</div>
+        <button class="btn-primary-tonal" onclick="updateSetting({runInBackground: !(appState.settings && appState.settings.runInBackground)})">
+          ${'$'}{settings.runInBackground !== false ? '✓ Active in Background (Protected)' : 'Enable Background Execution'}
+        </button>
+      </div>
+      <div class="card-item">
+        <div style="font-weight:700;margin-bottom:6px;">🛡️ Tool Permission Mode</div>
+        <div style="display:flex;gap:8px;">
+          <button class="mini-pill ${'$'}{settings.permissionMode === 'AUTO' ? 'active' : ''}" style="padding:7px 14px;" onclick="updateSetting({permissionMode:'AUTO'})">AUTO (Autonomous)</button>
+          <button class="mini-pill ${'$'}{settings.permissionMode === 'ASK' ? 'active' : ''}" style="padding:7px 14px;" onclick="updateSetting({permissionMode:'ASK'})">ASK (Confirm Edits)</button>
+        </div>
+      </div>
+      <div class="card-item">
+        <div style="font-weight:700;margin-bottom:6px;">🧠 Thinking / Reasoning Effort</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${'$'}{['OFF','LOW','MEDIUM','HIGH','MAX'].map(lvl => `<button class="mini-pill ${'$'}{settings.thinkingLevel === lvl ? 'active' : ''}" style="padding:6px 12px;" onclick="updateSetting({thinkingLevel:'${'$'}{lvl}'})">${'$'}{lvl}</button>`).join('')}
+        </div>
+      </div>
+      <div class="card-item">
+        <div style="font-weight:700;margin-bottom:6px;">🔊 Voice & Memory</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="mini-pill ${'$'}{settings.ttsAlwaysSpeak ? 'active' : ''}" style="padding:7px 12px;" onclick="toggleAlwaysSpeak()">🔊 Auto-Speak Replies: ${'$'}{settings.ttsAlwaysSpeak ? 'ON' : 'OFF'}</button>
+          <button class="mini-pill ${'$'}{settings.memoryEnabled ? 'active' : ''}" style="padding:7px 12px;" onclick="updateSetting({memoryEnabled:!settings.memoryEnabled})">🧠 Persistent Memory: ${'$'}{settings.memoryEnabled ? 'ON' : 'OFF'}</button>
+        </div>
+      </div>
+    `;
   }
 
   async function syncState() {
+    if (isSyncing) return;
+    isSyncing = true;
     try {
-      const r = await apiFetch('/api/state');
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const d = await r.json();
-      document.getElementById('connPill').classList.remove('offline');
-      document.getElementById('connText').textContent = (d.activeProvider && d.activeProvider.name ? d.activeProvider.name : 'Harness') + ' · ' + (d.activeProvider && d.activeProvider.model ? d.activeProvider.model : '');
-      document.getElementById('reconnectBanner').classList.remove('show');
-      document.getElementById('sessionBadge').textContent = d.sessionTitle || 'Shared Session';
-      document.getElementById('activeModelLabel').textContent = 'Model: ' + (d.activeProvider && d.activeProvider.model ? d.activeProvider.model : 'default');
+      const data = await apiFetch('/api/status');
+      const prevMsgs = (appState && appState.messages) ? appState.messages.length : 0;
+      appState = data;
+      renderDrawerAndSheets();
+      renderChatViewport();
 
-      if (d.settings) {
-        autoSpeak = !!d.settings.ttsAlwaysSpeak;
-        document.getElementById('ttsToggleBtn').textContent = 'TTS: ' + (autoSpeak ? 'On' : 'Off');
-        const permEl = document.getElementById('permSelect');
-        if (permEl && document.activeElement !== permEl) permEl.value = d.settings.permissionMode || 'CONFIRM_RISKY';
-        const thinkEl = document.getElementById('thinkingSelect');
-        if (thinkEl && document.activeElement !== thinkEl) thinkEl.value = d.settings.thinkingLevel || 'OFF';
+      const msgs = data.messages || [];
+      if (data.settings && data.settings.ttsAlwaysSpeak && msgs.length > prevMsgs) {
+        const last = msgs[msgs.length - 1];
+        if (last && last.role === 'ASSISTANT' && last.text && last.text !== lastSpokenText && window.speechSynthesis) {
+          lastSpokenText = last.text;
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(new SpeechSynthesisUtterance(last.text.slice(0, 500)));
+        }
       }
-
-      isRunning = !!(d.live && d.live.running);
-      const liveBar = document.getElementById('liveBar');
-      if (isRunning) {
-        liveBar.classList.add('active');
-        document.getElementById('liveStatusText').textContent = d.live.actionText || d.live.retryStatus || 'Agent working...';
-      } else {
-        liveBar.classList.remove('active');
-      }
-
-      renderApprovalOrQuestion(d.live);
-      renderMessages(d.messages || [], d.live || {});
-      renderTeam(d.team || []);
-      renderSessions(d.sessions || []);
-      renderProviders(d.providers || [], d.activeProvider || {});
     } catch (e) {
-      document.getElementById('connPill').classList.add('offline');
-      document.getElementById('connText').textContent = 'Reconnecting...';
-      document.getElementById('reconnectBanner').classList.add('show');
+      document.getElementById('reconnectBar').classList.add('show');
+    } finally {
+      isSyncing = false;
     }
   }
 
-  function renderApprovalOrQuestion(live) {
-    const card = document.getElementById('approvalCard');
-    if (!live) { card.classList.remove('active'); return; }
-    if (live.pendingApproval && live.pendingApproval.tool) {
-      card.classList.add('active');
-      card.innerHTML = '<strong>Approval Needed: ' + escapeHtml(live.pendingApproval.tool) + '</strong><div style="margin:4px 0;">' +
-        escapeHtml(live.pendingApproval.description) + '</div><div style="display:flex;gap:6px;margin-top:6px;">' +
-        '<button class="btn" onclick="sendApproval(\'approve\', true)">Approve</button>' +
-        '<button class="btn danger" onclick="sendApproval(\'deny\', false)">Deny</button></div>';
-    } else if (live.pendingQuestion && live.pendingQuestion.question) {
-      card.classList.add('active');
-      card.innerHTML = '<strong>Agent Question:</strong><div style="margin:4px 0;">' + escapeHtml(live.pendingQuestion.question) + '</div>';
-    } else {
-      card.classList.remove('active');
-    }
-  }
-
-  async function sendApproval(action, remember) {
-    await apiFetch('/api/approval', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action, remember }) });
-    syncState();
-  }
-
-  function renderMessages(messages, live) {
-    const sig = JSON.stringify({ m: messages.map(x => [x.id, x.text, x.thinking]), s: live.streamingText, t: live.streamingThinking, e: live.error });
-    if (sig === lastRenderedSignature) return;
-    lastRenderedSignature = sig;
-    const box = document.getElementById('chatMessages');
-    box.innerHTML = '';
-    if (messages.length === 0 && !live.streamingText && !live.streamingThinking) {
-      const welcome = document.createElement('div');
-      welcome.className = 'msg ASSISTANT';
-      welcome.textContent = 'AndroidHarness Complete Companion is synchronized with your phone session and 3-specialist AI team.';
-      box.appendChild(welcome);
-    }
-    messages.forEach(m => {
-      const div = document.createElement('div');
-      div.className = 'msg ' + (m.role || 'ASSISTANT') + (m.isError ? ' error' : '');
-      let html = '';
-      if (m.thinking) {
-        html += '<div class="thinking-box">' + escapeHtml(m.thinking) + '</div>';
-      }
-      if (m.toolName) {
-        html += '<div style="font-size:10px;color:var(--accent);margin-bottom:3px;">Tool: ' + escapeHtml(m.toolName) + '</div>';
-      }
-      html += escapeHtml(m.text);
-      div.innerHTML = html;
-      box.appendChild(div);
-    });
-    if (live.streamingThinking || live.streamingText) {
-      const streamDiv = document.createElement('div');
-      streamDiv.className = 'msg ASSISTANT';
-      let sHtml = '';
-      if (live.streamingThinking) sHtml += '<div class="thinking-box">' + escapeHtml(live.streamingThinking) + '</div>';
-      sHtml += escapeHtml(live.streamingText || 'Thinking...');
-      streamDiv.innerHTML = sHtml;
-      box.appendChild(streamDiv);
-    }
-    if (live.error) {
-      const errDiv = document.createElement('div');
-      errDiv.className = 'msg ASSISTANT error';
-      errDiv.textContent = live.error;
-      box.appendChild(errDiv);
-    }
-    box.scrollTop = box.scrollHeight;
-
-    const lastAssistant = [...messages].reverse().find(x => x.role === 'ASSISTANT' && x.text);
-    if (autoSpeak && lastAssistant && lastAssistant.id && lastAssistant.id !== lastSpokenMessageId && 'speechSynthesis' in window) {
-      lastSpokenMessageId = lastAssistant.id;
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(lastAssistant.text.slice(0, 600)));
-    }
-  }
-
-  function renderTeam(team) {
-    const list = document.getElementById('teamList');
-    if (!list) return;
-    list.innerHTML = team.map(sp =>
-      '<div class="card">' +
-        '<div class="card-title"><span>' + escapeHtml(sp.name) + '</span><span class="badge">' + escapeHtml(sp.model || 'Active Model') + '</span></div>' +
-        '<div class="card-sub">' + escapeHtml(sp.description) + '</div>' +
-        '<div style="font-size:11px;color:var(--muted);">Persona: ' + escapeHtml(sp.persona) + ' · Shared History: ' + (sp.sharedHistory ? 'Enabled' : 'Private') + '</div>' +
-        '<div style="display:flex;gap:6px;margin-top:4px;">' +
-          '<button class="btn" onclick="askSpecialist(\'' + escapeHtml(sp.name).replace(/'/g, '') + '\')">Consult in Shared Chat</button>' +
-          '<button class="btn secondary" onclick="startSpecialistSession(\'' + escapeHtml(sp.id) + '\', \'' + escapeHtml(sp.name).replace(/'/g, '') + '\')">Dedicated Session</button>' +
-        '</div>' +
-      '</div>'
-    ).join('');
-  }
-
-  function askSpecialist(name) {
-    switchView('chat', document.querySelectorAll('.nav-btn')[0]);
+  async function sendQuickPrompt(text) {
     const input = document.getElementById('promptInput');
-    input.value = '@' + name + ': ';
-    input.focus();
+    input.value = text;
+    await sendPrompt();
   }
 
-  async function startSpecialistSession(specialistId, name) {
-    await apiFetch('/api/session/new', {
+  async function handleSendOrStop() {
+    if (appState && appState.live && appState.live.running) {
+      await controlRun('stop');
+    } else {
+      await sendPrompt();
+    }
+  }
+
+  async function sendPrompt() {
+    const input = document.getElementById('promptInput');
+    const prompt = input.value.trim();
+    if (!prompt) return;
+    input.value = '';
+    input.style.height = 'auto';
+    await apiFetch('/api/chat', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ title: name + ' Session', specialistId })
+      body: JSON.stringify({
+        prompt,
+        specialistId: selectedSpecialistId,
+        mode: currentMode,
+        async: true
+      })
     });
-    switchView('chat', document.querySelectorAll('.nav-btn')[0]);
-    syncState();
-  }
-
-  function renderSessions(sessions) {
-    const list = document.getElementById('sessionsList');
-    if (!list) return;
-    list.innerHTML = sessions.map(s =>
-      '<div class="card" style="cursor:pointer;border-color:' + (s.active ? 'var(--accent)' : 'var(--border)') + ';" onclick="selectSession(\'' + escapeHtml(s.id) + '\')">' +
-        '<div class="card-title"><span>' + escapeHtml(s.title) + '</span>' + (s.active ? '<span class="badge">Active on Phone & Web</span>' : '') + '</div>' +
-      '</div>'
-    ).join('');
+    await syncState();
   }
 
   async function selectSession(sessionId) {
     await apiFetch('/api/session/select', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ sessionId })
     });
-    switchView('chat', document.querySelectorAll('.nav-btn')[0]);
-    syncState();
+    await syncState();
   }
 
-  async function newSharedSession() {
+  async function createNewSession(specialistId, kind) {
     await apiFetch('/api/session/new', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ title: 'New Conversation' })
+      body: JSON.stringify({ specialistId: specialistId || '', kind: kind || 'CODE' })
     });
-    switchView('chat', document.querySelectorAll('.nav-btn')[0]);
-    syncState();
+    await syncState();
   }
 
-  function renderProviders(providers, activeProvider) {
-    const list = document.getElementById('providersList');
-    if (!list) return;
-    list.innerHTML = providers.map(p => {
-      const isSelected = p.id === activeProvider.id;
-      const models = (p.models || []).map(m =>
-        '<option value="' + escapeHtml(m.id) + '" ' + (isSelected && m.id === activeProvider.model ? 'selected' : '') + '>' + escapeHtml(m.id) + (m.free ? ' (Free)' : '') + '</option>'
-      ).join('');
-      return '<div class="card" style="border-color:' + (isSelected ? 'var(--accent)' : 'var(--border)') + ';">' +
-        '<div class="card-title"><span>' + escapeHtml(p.name) + ' (' + escapeHtml(p.type) + ')</span><span class="badge">' + (p.hasKey ? 'Ready' : 'Key Required in Phone App') + '</span></div>' +
-        '<div class="card-sub">' + escapeHtml(p.rateLimitSummary || '') + '</div>' +
-        '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;">' +
-          '<select id="model-sel-' + escapeHtml(p.id) + '" style="flex:1;">' + models + '</select>' +
-          '<button class="btn" onclick="selectProviderModel(\'' + escapeHtml(p.id) + '\')">Use Model</button>' +
-        '</div>' +
-      '</div>';
-    }).join('');
-  }
-
-  async function selectProviderModel(providerId) {
-    const sel = document.getElementById('model-sel-' + providerId);
-    const model = sel ? sel.value : '';
+  async function selectProviderModel(providerId, model) {
     await apiFetch('/api/model/select', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ providerId, model })
     });
-    syncState();
+    closeSheets();
+    await syncState();
   }
 
-  async function saveSettings() {
-    const permissionMode = document.getElementById('permSelect').value;
-    const thinkingLevel = document.getElementById('thinkingSelect').value;
+  async function updateSetting(patch) {
     await apiFetch('/api/settings', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ permissionMode, thinkingLevel, ttsAlwaysSpeak: autoSpeak })
+      body: JSON.stringify(patch)
     });
-    syncState();
+    await syncState();
   }
 
-  async function toggleAutoSpeak() {
-    autoSpeak = !autoSpeak;
-    await apiFetch('/api/settings', {
+  async function cycleThinkingLevel() {
+    const order = ['OFF', 'LOW', 'MEDIUM', 'HIGH', 'MAX'];
+    const cur = (appState && appState.settings && appState.settings.thinkingLevel) || 'OFF';
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    await updateSetting({ thinkingLevel: next });
+  }
+
+  async function toggleAlwaysSpeak() {
+    const cur = !!(appState && appState.settings && appState.settings.ttsAlwaysSpeak);
+    await updateSetting({ ttsAlwaysSpeak: !cur });
+  }
+
+  async function controlRun(action) {
+    await apiFetch('/api/control', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ ttsAlwaysSpeak: autoSpeak })
+      body: JSON.stringify({ action })
     });
-    syncState();
+    await syncState();
   }
 
-  async function sendChat() {
-    const input = document.getElementById('promptInput');
-    const prompt = input.value.trim();
-    if (!prompt) return;
-    input.value = '';
-    const mode = document.getElementById('modeSelect').value || 'ACT';
-    await apiFetch('/api/chat', {
+  async function answerPrompt(answer) {
+    await apiFetch('/api/control', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ prompt, mode, async: true })
+      body: JSON.stringify({ action: 'answer', answer })
     });
-    syncState();
+    await syncState();
   }
 
-  async function stopRun() {
-    await apiFetch('/api/stop', { method: 'POST' });
-    syncState();
+  async function refreshFiles() {
+    const data = await apiFetch('/api/files');
+    const pane = document.getElementById('fileListPane');
+    const list = (data.files || []).filter(f => !f.isDir);
+    if (!list.length) {
+      pane.innerHTML = '<div style="padding:10px;font-size:12px;color:var(--on-surface-variant);">Workspace is empty. Click "＋ New File" to create one.</div>';
+      return;
+    }
+    pane.innerHTML = list.map(f => `
+      <div class="file-entry ${'$'}{currentEditingFile === f.name ? 'active' : ''}" onclick="loadFile('${'$'}{escapeHtml(f.name).replace(/'/g, "\\'")}')">
+        <span>📄 ${'$'}{escapeHtml(f.name)}</span>
+        <span style="color:var(--outline);font-size:10px;">${'$'}{f.size}B</span>
+      </div>
+    `).join('');
   }
 
-  function startVoiceInput() {
+  async function loadFile(name) {
+    currentEditingFile = name;
+    document.getElementById('editingFileName').textContent = name;
+    const data = await apiFetch('/api/file?name=' + encodeURIComponent(name));
+    document.getElementById('fileEditorContent').value = data.content || '';
+    refreshFiles();
+  }
+
+  async function saveActiveFile() {
+    const name = currentEditingFile || prompt('Enter file path to save:', 'main.kt');
+    if (!name) return;
+    currentEditingFile = name.trim();
+    const content = document.getElementById('fileEditorContent').value;
+    await apiFetch('/api/file', {
+      method: 'POST',
+      body: JSON.stringify({ name: currentEditingFile, content })
+    });
+    document.getElementById('editingFileName').textContent = currentEditingFile + ' (Saved ✓)';
+    await refreshFiles();
+  }
+
+  async function promptNewFile() {
+    const name = prompt('New file relative path (e.g. src/App.kt):');
+    if (!name) return;
+    currentEditingFile = name.trim();
+    document.getElementById('editingFileName').textContent = currentEditingFile;
+    document.getElementById('fileEditorContent').value = '';
+    await saveActiveFile();
+  }
+
+  function toggleVoiceInput() {
+    if (window.HarnessNative && typeof window.HarnessNative.startVoice === 'function') {
+      window.HarnessNative.startVoice();
+      return;
+    }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
-      document.getElementById('promptInput').placeholder = 'Browser SpeechRecognition unsupported on this device';
+      alert('Speech recognition is handled via the phone mic or supported browser.');
       return;
     }
     const rec = new SR();
-    rec.lang = 'en-US';
-    rec.onresult = (e) => {
-      const transcript = e.results[0][0].transcript;
-      document.getElementById('promptInput').value = transcript;
+    rec.lang = navigator.language || 'en-US';
+    rec.onresult = (ev) => {
+      const transcript = ev.results[0][0].transcript;
+      const input = document.getElementById('promptInput');
+      input.value = (input.value ? input.value + ' ' : '') + transcript;
     };
     rec.start();
   }
 
-  async function loadFiles() {
-    const r = await apiFetch('/api/files');
-    const d = await r.json();
-    const list = document.getElementById('fileList');
-    list.innerHTML = '';
-    (d.files || []).forEach(f => {
-      const div = document.createElement('div');
-      div.className = 'file-item' + (f.path === activePath ? ' active' : '');
-      div.textContent = f.path + ' (' + f.size + 'B)';
-      div.onclick = () => openFile(f.path);
-      list.appendChild(div);
-    });
-  }
+  const promptEl = document.getElementById('promptInput');
+  promptEl.addEventListener('input', () => {
+    promptEl.style.height = 'auto';
+    promptEl.style.height = Math.min(promptEl.scrollHeight, 120) + 'px';
+  });
+  promptEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendPrompt();
+    }
+  });
 
-  async function openFile(p) {
-    activePath = p;
-    document.getElementById('currentFile').textContent = p;
-    const r = await apiFetch('/api/file?path=' + encodeURIComponent(p));
-    const d = await r.json();
-    document.getElementById('editor').value = d.content || '';
-    loadFiles();
-  }
-
-  function createNewFilePrompt() {
-    const name = prompt('Enter relative workspace file path (e.g. src/App.kt):');
-    if (!name) return;
-    activePath = name.trim().replace(/^\/+/, '');
-    document.getElementById('currentFile').textContent = activePath;
-    document.getElementById('editor').value = '';
-  }
-
-  async function saveFile() {
-    if (!activePath) { createNewFilePrompt(); if (!activePath) return; }
-    await apiFetch('/api/file', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ path: activePath, content: document.getElementById('editor').value })
-    });
-    loadFiles();
-  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) syncState();
+  });
 
   syncState();
-  setInterval(() => syncState(), 1200);
+  setInterval(syncState, 1200);
 </script></body></html>"""
     }
 }

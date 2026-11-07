@@ -96,4 +96,15 @@ class ChatAgentsTest {
         assertEquals(settings.chatAgents, Json.decodeFromString(SettingsBackupFile.serializer(), encoded).settings.chatAgents)
         assertTrue(runCatching { SettingsBackupValidation.validate(SettingsBackupFile(settings = settings.copy(chatAgents = listOf(agent.copy(name = ""))))) }.isFailure)
     }
+
+    @Test fun persistentSixDeveloperSpecialistTeamValidatesAndMergesIdempotently() {
+        assertEquals(6, PersistentSpecialistTeam.defaultSpecialists.size)
+        val encoded = ChatAgentProfile.encodeList(PersistentSpecialistTeam.defaultSpecialists)
+        val decoded = ChatAgentProfile.decodeList(encoded)
+        assertEquals(6, decoded.size)
+        val mergedOnce = PersistentSpecialistTeam.mergePreservingConfigured(emptyList(), "harness", "cohere/north-mini-code:free")
+        assertEquals(6, mergedOnce.size)
+        val mergedTwice = PersistentSpecialistTeam.mergePreservingConfigured(mergedOnce, "harness", "cohere/north-mini-code:free")
+        assertEquals(mergedOnce, mergedTwice)
+    }
 }

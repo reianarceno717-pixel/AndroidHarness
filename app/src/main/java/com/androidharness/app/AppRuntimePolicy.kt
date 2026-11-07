@@ -19,7 +19,7 @@ internal data class AppRuntimeState(
     val canRun: Boolean get() = ready && (visible || runInBackground)
 }
 
-/** Tracks the whole app, including secondary activities, rather than an individual chat. */
+/** Tracks the whole app, including secondary activities, floating bubble overlay, and LAN bridge. */
 internal class AppRuntimePolicy(private val context: Context, private val settings: SettingsRepository) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val visible = MutableStateFlow(false)
@@ -38,8 +38,8 @@ internal class AppRuntimePolicy(private val context: Context, private val settin
             override fun onActivityStopped(activity: Activity) {
                 started -= activity
                 if (started.isNotEmpty()) return
-                // Activity replacement and rotation must not interrupt an active agent.
-                leaving = scope.launch { delay(700); if (started.isEmpty()) visible.value = false }
+                // Activity replacement, rotation, or brief app switching must not interrupt an active agent.
+                leaving = scope.launch { delay(1500); if (started.isEmpty()) visible.value = false }
             }
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
             override fun onActivityResumed(activity: Activity) = Unit
@@ -49,12 +49,17 @@ internal class AppRuntimePolicy(private val context: Context, private val settin
         })
     }
 
-    suspend fun canRun(): Boolean = settings.settings.first().runInBackground || visible.value
+    private fun isBackgroundAllowed(savedRunInBackground: Boolean, shown: Boolean): Boolean =
+        savedRunInBackground || shown || FloatingBubbleService.isRunning() || LaptopConnectionActivity.isServerRunning()
+
+    suspend fun canRun(): Boolean = isBackgroundAllowed(settings.settings.first().runInBackground, visible.value)
 
     suspend fun <T> whileAllowed(block: suspend () -> T): T = coroutineScope {
         if (!canRun()) throw BackgroundExecutionDisabled()
         val guard = launch {
-            combine(settings.settings, visible) { saved, shown -> saved.runInBackground || shown }.first { !it }
+            combine(settings.settings, visible) { saved, shown ->
+                isBackgroundAllowed(saved.runInBackground, shown)
+            }.first { !it }
             throw BackgroundExecutionDisabled()
         }
         try { block() } finally { guard.cancel() }
@@ -63,7 +68,12 @@ internal class AppRuntimePolicy(private val context: Context, private val settin
     fun start(onBackgroundDisabled: suspend () -> Unit, onAvailable: suspend () -> Unit) {
         scope.launch {
             combine(settings.settings, visible) { saved, shown ->
-                AppRuntimeState(true, shown, saved.runInBackground, saved.notificationsEnabled)
+                AppRuntimeState(
+                    ready = true,
+                    visible = shown,
+                    runInBackground = isBackgroundAllowed(saved.runInBackground, shown),
+                    notificationsEnabled = saved.notificationsEnabled,
+                )
             }.distinctUntilChanged().collect { next ->
                 val previous = mutable.value
                 mutable.value = next
@@ -72,12 +82,17 @@ internal class AppRuntimePolicy(private val context: Context, private val settin
                     withContext(Dispatchers.IO) { onBackgroundDisabled() }
                 } else {
                     if (!previous.canRun || next.visible && !previous.visible) onAvailable()
-                    if (next.runInBackground && (!previous.runInBackground || !previous.ready)) {
+                    if (next.runInBackground) {
                         runCatching {
-                            if (RuntimeNotifier.active.value) AgentService.acquireKeepalive(context)
-                            else if (next.visible) AgentService.startPersistent(context)
+                            if (RuntimeNotifier.active.value || FloatingBubbleService.isRunning() || LaptopConnectionActivity.isServerRunning()) {
+                                AgentService.acquireKeepalive(context)
+                            } else if (!previous.runInBackground || !previous.ready || next.visible) {
+                                AgentService.startPersistent(context)
+                            }
                         }
-                    } else if (!next.runInBackground) AgentService.stop(context)
+                    } else if (!FloatingBubbleService.isRunning() && !LaptopConnectionActivity.isServerRunning()) {
+                        AgentService.stop(context)
+                    }
                 }
             }
         }

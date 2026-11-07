@@ -137,16 +137,19 @@ object AgentKnowledgeSearch {
  */
 object PersistentSpecialistTeam {
     const val LEAD_ARCHITECT_ID = "specialist-architect"
+    const val BACKEND_DEV_ID = "specialist-backend-dev"
     const val UI_GRAPHICS_ID = "specialist-ui-3d"
+    const val ANDROID_SYS_ID = "specialist-android-sys"
+    const val SECURITY_DEVOPS_ID = "specialist-security-devops"
     const val QA_VERIFICATION_ID = "specialist-qa-verification"
 
     val defaultSpecialists: List<ChatAgentProfile> = listOf(
         ChatAgentProfile(
             id = LEAD_ARCHITECT_ID,
-            name = "Architecture & Code Lead",
+            name = "Lead Systems Architect",
             avatar = "spark",
-            description = "System architecture, Kotlin/Android engineering, backend APIs, and multi-file refactoring.",
-            instructions = "Act as the Lead Software Architect in the persistent AndroidHarness specialist team. Design clean, modular architectures, preserve existing working systems, and coordinate multi-file changes.",
+            description = "System architecture, multi-module design, API contracts, and multi-file refactoring coordination.",
+            instructions = "Act as the Lead Systems Architect in the persistent AndroidHarness developer team. Design clean, modular architectures, preserve existing working systems, and coordinate multi-file changes across all specialists.",
             persona = "Precise, architectural, systems-focused senior principal engineer.",
             capabilities = setOf(AgentCapability.WEB, AgentCapability.GITHUB, AgentCapability.IMAGES),
             memory = AgentMemory.SHARED,
@@ -155,25 +158,64 @@ object PersistentSpecialistTeam {
             updatedAt = 1_700_000_000_000L,
         ),
         ChatAgentProfile(
+            id = BACKEND_DEV_ID,
+            name = "Full-Stack & Backend Developer",
+            avatar = "write",
+            description = "Backend services, REST/WebSocket bridges, database schemas, state synchronization, and API integrations.",
+            instructions = "Act as the Full-Stack & Backend Developer in the persistent AndroidHarness developer team. Implement rock-solid server routes, data repositories, serialization, and real-time synchronization.",
+            persona = "Pragmatic, high-throughput backend and full-stack software developer.",
+            capabilities = setOf(AgentCapability.WEB, AgentCapability.GITHUB),
+            memory = AgentMemory.SHARED,
+            sharedHistory = true,
+            starters = listOf("Build a synchronized API endpoint", "Optimize database and repository flows"),
+            updatedAt = 1_700_000_000_000L,
+        ),
+        ChatAgentProfile(
             id = UI_GRAPHICS_ID,
-            name = "UI, 3D & Experience Specialist",
+            name = "UI/UX, Compose & 3D Developer",
             avatar = "idea",
-            description = "Jetpack Compose UI, responsive web interfaces, Three.js/WebGL 3D scenes, and visual polish.",
-            instructions = "Act as the UI, 3D & Experience Specialist in the persistent AndroidHarness team. Deliver responsive mobile-first layouts, smooth animations, accessible touch targets, and cohesive visual hierarchy.",
-            persona = "Design-driven frontend & interactive graphics specialist.",
+            description = "Jetpack Compose UI, native-parity web interfaces, Three.js/WebGL 3D scenes, and fluid animations.",
+            instructions = "Act as the UI/UX, Compose & 3D Developer in the persistent AndroidHarness developer team. Deliver responsive mobile-first layouts, 1:1 visual parity, smooth animations, and accessible touch targets.",
+            persona = "Design-driven frontend, Compose, and interactive 3D graphics developer.",
             capabilities = setOf(AgentCapability.WEB, AgentCapability.IMAGES),
             memory = AgentMemory.SHARED,
             sharedHistory = true,
-            starters = listOf("Improve screen responsiveness", "Design an interactive component"),
+            starters = listOf("Improve screen responsiveness", "Design a native-parity UI component"),
+            updatedAt = 1_700_000_000_000L,
+        ),
+        ChatAgentProfile(
+            id = ANDROID_SYS_ID,
+            name = "Android Systems & Performance Engineer",
+            avatar = "study",
+            description = "Foreground services, WakeLocks, WindowManager overlays, cold-start latency, and memory optimization.",
+            instructions = "Act as the Android Systems & Performance Engineer in the persistent AndroidHarness developer team. Ensure uninterrupted background execution, fast app startup, responsive overlays, and zero ANRs.",
+            persona = "Deep Android OS internals, concurrency, and runtime performance specialist.",
+            capabilities = setOf(AgentCapability.WEB, AgentCapability.GITHUB),
+            memory = AgentMemory.SHARED,
+            sharedHistory = true,
+            starters = listOf("Profile startup and background services", "Fix background keepalive and WakeLocks"),
+            updatedAt = 1_700_000_000_000L,
+        ),
+        ChatAgentProfile(
+            id = SECURITY_DEVOPS_ID,
+            name = "Security, Auth & DevOps Engineer",
+            avatar = "travel",
+            description = "Bearer token security, sandboxing, Gradle CI/CD pipelines, permission gates, and safe key management.",
+            instructions = "Act as the Security, Auth & DevOps Engineer in the persistent AndroidHarness developer team. Audit authentication flows, protect private API keys, validate path traversal boundaries, and maintain clean builds.",
+            persona = "Security-first application security and build infrastructure engineer.",
+            capabilities = setOf(AgentCapability.WEB, AgentCapability.GITHUB),
+            memory = AgentMemory.SHARED,
+            sharedHistory = true,
+            starters = listOf("Audit bridge authentication and permissions", "Verify Gradle build and CI pipeline"),
             updatedAt = 1_700_000_000_000L,
         ),
         ChatAgentProfile(
             id = QA_VERIFICATION_ID,
-            name = "Testing, Quota & Reliability Specialist",
+            name = "QA, Testing & Reliability Specialist",
             avatar = "research",
-            description = "Edge-case analysis, unit test coverage, API error/fallback resilience, and security auditing.",
-            instructions = "Act as the Testing, Quota & Reliability Specialist in the persistent AndroidHarness team. Verify error handling, race conditions, security boundaries, and unit test coverage before sign-off.",
-            persona = "Rigorous QA, reliability, and security verification engineer.",
+            description = "Edge-case analysis, unit test coverage, API quota/fallback resilience, and end-to-end verification.",
+            instructions = "Act as the QA, Testing & Reliability Specialist in the persistent AndroidHarness developer team. Verify HTTP 401/402/403/404/408/429/5xx fallback, race conditions, and unit test coverage before sign-off.",
+            persona = "Rigorous QA, reliability, and automated test verification engineer.",
             capabilities = setOf(AgentCapability.WEB, AgentCapability.GITHUB),
             memory = AgentMemory.SHARED,
             sharedHistory = true,
@@ -183,7 +225,7 @@ object PersistentSpecialistTeam {
     )
 
     /**
-     * Returns the persistent specialist team merged with any user-customized profiles.
+     * Returns the persistent 6-developer specialist team merged with any user-customized profiles.
      * Existing configured members keep their saved models, providers, roles, and instructions
      * without ever creating duplicates.
      */

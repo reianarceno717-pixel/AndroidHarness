@@ -229,7 +229,7 @@ class AgentService : Service() {
             val container = (applicationContext as HarnessApp).container
             combine(container.runtimePolicy.state, container.settings.settings) { policy, settings -> policy to settings.liveUpdatesEnabled }.collect { (policy, liveUpdates) ->
                 if (!policy.ready) return@collect
-                if (!policy.runInBackground) {
+                if (!policy.runInBackground && !FloatingBubbleService.isRunning() && !LaptopConnectionActivity.isServerRunning()) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                     return@collect
@@ -244,14 +244,15 @@ class AgentService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if ((applicationContext as HarnessApp).container.runtimePolicy.state.value.let { it.ready && !it.runInBackground }) {
+        if ((applicationContext as HarnessApp).container.runtimePolicy.state.value.let { it.ready && !it.runInBackground && !FloatingBubbleService.isRunning() && !LaptopConnectionActivity.isServerRunning() }) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
         when (intent?.action) {
+            ACTION_START -> if (FloatingBubbleService.isRunning() || LaptopConnectionActivity.isServerRunning() || RuntimeNotifier.active.value) acquireWakeLock()
             ACTION_ACQUIRE_WAKELOCK -> acquireWakeLock()
-            ACTION_RELEASE_WAKELOCK -> releaseWakeLock()
+            ACTION_RELEASE_WAKELOCK -> if (!FloatingBubbleService.isRunning() && !LaptopConnectionActivity.isServerRunning()) releaseWakeLock()
             ACTION_STOP -> {
                 stopFromNotification()
                 return START_NOT_STICKY
@@ -547,20 +548,30 @@ class AgentService : Service() {
 
         fun stop(context: Context) { context.stopService(Intent(context, AgentService::class.java)) }
 
+        private fun isBackgroundPermitted(context: Context): Boolean {
+            if (FloatingBubbleService.isRunning() || LaptopConnectionActivity.isServerRunning()) return true
+            val state = (context.applicationContext as? HarnessApp)?.container?.runtimePolicy?.state?.value ?: return true
+            return !state.ready || state.runInBackground
+        }
+
         fun startPersistent(context: Context) {
-            if ((context.applicationContext as? HarnessApp)?.container?.runtimePolicy?.state?.value?.runInBackground != true) return
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, AgentService::class.java).setAction(ACTION_START),
-            )
+            if (!isBackgroundPermitted(context)) return
+            runCatching {
+                ContextCompat.startForegroundService(
+                    context,
+                    Intent(context, AgentService::class.java).setAction(ACTION_START),
+                )
+            }
         }
 
         fun acquireKeepalive(context: Context) {
-            if ((context.applicationContext as? HarnessApp)?.container?.runtimePolicy?.state?.value?.runInBackground != true) return
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, AgentService::class.java).setAction(ACTION_ACQUIRE_WAKELOCK),
-            )
+            if (!isBackgroundPermitted(context)) return
+            runCatching {
+                ContextCompat.startForegroundService(
+                    context,
+                    Intent(context, AgentService::class.java).setAction(ACTION_ACQUIRE_WAKELOCK),
+                )
+            }
         }
 
         fun releaseKeepalive(context: Context) {
