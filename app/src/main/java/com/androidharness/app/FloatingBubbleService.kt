@@ -1,13 +1,14 @@
 package com.androidharness.app
 
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.Service
-import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
@@ -21,11 +22,17 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
-import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
@@ -37,6 +44,13 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.abs
 
+/**
+ * Phase 5, Bug 3 & Bug 4: Complete Messenger-Style Movable Floating AI Assistant.
+ * - Uses the actual AndroidHarness application launcher icon (applicationInfo.loadIcon / R.mipmap.ic_launcher).
+ * - Supports free dragging with smooth left/right screen-edge snapping and system bar / display cutout inset awareness.
+ * - Opens a movable, resizable, minimizable, keyboard-aware overlay window hosting the complete AndroidHarness
+ *   interface synchronized with the native AppContainer, RunManager, AgentEngine, and shared SessionRepository.
+ */
 class FloatingBubbleService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -44,9 +58,16 @@ class FloatingBubbleService : Service() {
 
     private var bubbleView: View? = null
     private var overlayView: View? = null
+    private var overlayWebView: WebView? = null
+    private var edgeSnapAnimator: ValueAnimator? = null
 
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var overlayParams: WindowManager.LayoutParams? = null
+
+    private var savedOverlayX: Int? = null
+    private var savedOverlayY: Int? = null
+    private var savedOverlayWidth: Int? = null
+    private var savedOverlayHeight: Int? = null
 
     private var tts: TextToSpeech? = null
     private var isTtsReady = false
@@ -64,6 +85,7 @@ class FloatingBubbleService : Service() {
         }
 
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        LaptopConnectionActivity.ensureServerRunning(applicationContext)
         initTts()
         createBubbleView()
     }
@@ -83,10 +105,36 @@ class FloatingBubbleService : Service() {
         tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "bubble-speech")
     }
 
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    /** Computes usable screen area respecting status bars, navigation bars, and display cutouts. */
+    private fun safeScreenBounds(): Rect {
+        val dm = resources.displayMetrics
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return runCatching {
+                val metrics = windowManager.currentWindowMetrics
+                val insets = metrics.windowInsets.getInsetsIgnoringVisibility(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
+                )
+                Rect(
+                    insets.left + dp(6),
+                    insets.top + dp(6),
+                    (metrics.bounds.width() - insets.right - dp(6)).coerceAtLeast(dp(120)),
+                    (metrics.bounds.height() - insets.bottom - dp(6)).coerceAtLeast(dp(200)),
+                )
+            }.getOrDefault(Rect(dp(8), dp(32), dm.widthPixels - dp(8), dm.heightPixels - dp(48)))
+        }
+        return Rect(dp(8), dp(32), dm.widthPixels - dp(8), dm.heightPixels - dp(48))
+    }
+
+    /** Loads the real AndroidHarness launcher icon (Bug 4 fix: never substitute a generic emoji). */
+    private fun loadAppLauncherDrawable() =
+        runCatching { applicationInfo.loadIcon(packageManager) }.getOrNull()
+            ?: runCatching { getDrawable(R.mipmap.ic_launcher) }.getOrNull()
+
     @SuppressLint("ClickableViewAccessibility")
     private fun createBubbleView() {
-        val sizeDp = 56
-        val sizePx = (sizeDp * resources.displayMetrics.density).toInt()
+        val sizePx = dp(58)
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -95,40 +143,53 @@ class FloatingBubbleService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
+        val bounds = safeScreenBounds()
         bubbleParams = WindowManager.LayoutParams(
             sizePx,
             sizePx,
             type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 20
-            y = 200
+            x = bounds.left
+            y = (bounds.top + dp(140)).coerceIn(bounds.top, (bounds.bottom - sizePx).coerceAtLeast(bounds.top))
         }
 
-        val bubble = TextView(this).apply {
-            text = "⚡"
-            textSize = 24f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+        val bubbleContainer = FrameLayout(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.parseColor("#0F172A"))
-                setStroke((2 * resources.displayMetrics.density).toInt(), Color.parseColor("#38BDF8"))
+                setStroke(dp(2), Color.parseColor("#38BDF8"))
             }
-            elevation = 16f
+            elevation = dp(8).toFloat()
+            val pad = dp(5)
+            setPadding(pad, pad, pad, pad)
         }
+
+        val iconView = ImageView(this).apply {
+            setImageDrawable(loadAppLauncherDrawable())
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "AndroidHarness Floating Assistant"
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER,
+            )
+        }
+        bubbleContainer.addView(iconView)
 
         var initialX = 0
         var initialY = 0
         var touchX = 0f
         var touchY = 0f
 
-        bubble.setOnTouchListener { _, event ->
+        bubbleContainer.setOnTouchListener { _, event ->
             val params = bubbleParams ?: return@setOnTouchListener false
+            val currentBounds = safeScreenBounds()
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    edgeSnapAnimator?.cancel()
                     initialX = params.x
                     initialY = params.y
                     touchX = event.rawX
@@ -136,16 +197,20 @@ class FloatingBubbleService : Service() {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params.x = initialX + (event.rawX - touchX).toInt()
-                    params.y = initialY + (event.rawY - touchY).toInt()
-                    windowManager.updateViewLayout(bubble, params)
+                    val maxX = (currentBounds.right - sizePx).coerceAtLeast(currentBounds.left)
+                    val maxY = (currentBounds.bottom - sizePx).coerceAtLeast(currentBounds.top)
+                    params.x = (initialX + (event.rawX - touchX).toInt()).coerceIn(currentBounds.left, maxX)
+                    params.y = (initialY + (event.rawY - touchY).toInt()).coerceIn(currentBounds.top, maxY)
+                    runCatching { windowManager.updateViewLayout(bubbleContainer, params) }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
                     val diffX = abs(event.rawX - touchX)
                     val diffY = abs(event.rawY - touchY)
-                    if (diffX < 15 && diffY < 15) {
+                    if (diffX < dp(10) && diffY < dp(10)) {
                         toggleOverlay()
+                    } else {
+                        snapBubbleToNearestEdge(bubbleContainer, params, currentBounds, sizePx)
                     }
                     true
                 }
@@ -153,8 +218,30 @@ class FloatingBubbleService : Service() {
             }
         }
 
-        bubbleView = bubble
-        windowManager.addView(bubble, bubbleParams)
+        bubbleView = bubbleContainer
+        windowManager.addView(bubbleContainer, bubbleParams)
+    }
+
+    private fun snapBubbleToNearestEdge(
+        bubble: View,
+        params: WindowManager.LayoutParams,
+        bounds: Rect,
+        sizePx: Int,
+    ) {
+        val midX = (bounds.left + bounds.right - sizePx) / 2
+        val targetX = if (params.x <= midX) bounds.left else (bounds.right - sizePx).coerceAtLeast(bounds.left)
+        edgeSnapAnimator?.cancel()
+        edgeSnapAnimator = ValueAnimator.ofInt(params.x, targetX).apply {
+            duration = 220L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { anim ->
+                params.x = anim.animatedValue as Int
+                if (bubbleView != null) {
+                    runCatching { windowManager.updateViewLayout(bubble, params) }
+                }
+            }
+            start()
+        }
     }
 
     private fun toggleOverlay() {
@@ -166,21 +253,40 @@ class FloatingBubbleService : Service() {
     }
 
     private fun hideOverlay() {
-        overlayView?.let {
-            windowManager.removeView(it)
+        overlayParams?.let {
+            savedOverlayX = it.x
+            savedOverlayY = it.y
+            savedOverlayWidth = it.width
+            savedOverlayHeight = it.height
+        }
+        overlayWebView?.let { wv ->
+            runCatching {
+                wv.stopLoading()
+                (wv.parent as? ViewGroup)?.removeView(wv)
+                wv.destroy()
+            }
+        }
+        overlayWebView = null
+        overlayView?.let { view ->
+            runCatching { windowManager.removeView(view) }
             overlayView = null
         }
     }
 
+    @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
     private fun showOverlay() {
         if (overlayView != null) return
+        LaptopConnectionActivity.ensureServerRunning(applicationContext)
 
-        val width = (resources.displayMetrics.widthPixels * 0.90).toInt().coerceAtMost(
-            (420 * resources.displayMetrics.density).toInt()
-        )
-        val height = (resources.displayMetrics.heightPixels * 0.55).toInt().coerceAtMost(
-            (520 * resources.displayMetrics.density).toInt()
-        )
+        val bounds = safeScreenBounds()
+        val usableWidth = (bounds.right - bounds.left).coerceAtLeast(dp(280))
+        val usableHeight = (bounds.bottom - bounds.top).coerceAtLeast(dp(340))
+
+        val defaultWidth = (usableWidth * 0.92).toInt().coerceIn(dp(280), dp(460).coerceAtMost(usableWidth))
+        val defaultHeight = (usableHeight * 0.72).toInt().coerceIn(dp(340), dp(640).coerceAtMost(usableHeight))
+
+        val width = (savedOverlayWidth ?: defaultWidth).coerceIn(dp(260), usableWidth)
+        val height = (savedOverlayHeight ?: defaultHeight).coerceIn(dp(320), usableHeight)
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -193,173 +299,247 @@ class FloatingBubbleService : Service() {
             width,
             height,
             type,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-            PixelFormat.TRANSLUCENT
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.CENTER
+            gravity = Gravity.TOP or Gravity.START
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            x = (savedOverlayX ?: (bounds.left + (usableWidth - width) / 2))
+                .coerceIn(bounds.left, (bounds.right - width).coerceAtLeast(bounds.left))
+            y = (savedOverlayY ?: (bounds.top + (usableHeight - height) / 3))
+                .coerceIn(bounds.top, (bounds.bottom - height).coerceAtLeast(bounds.top))
         }
-
-        val density = resources.displayMetrics.density
-        val dp = { value: Int -> (value * density).toInt() }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(16))
             background = GradientDrawable().apply {
                 cornerRadius = dp(16).toFloat()
-                setColor(Color.parseColor("#0F172A"))
-                setStroke(dp(1), Color.parseColor("#334155"))
+                setColor(Color.parseColor("#090D16"))
+                setStroke(dp(1), Color.parseColor("#38BDF8"))
             }
-            elevation = 24f
+            elevation = dp(16).toFloat()
+            clipToOutline = true
         }
 
-        // Header
+        // Draggable Messenger-style Header Bar with real AndroidHarness launcher icon
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(7), dp(8), dp(7))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0F172A"))
+            }
         }
+
+        val headerLogo = ImageView(this).apply {
+            setImageDrawable(loadAppLauncherDrawable())
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply {
+                rightMargin = dp(8)
+            }
+        }
+
         val title = TextView(this).apply {
-            text = "⚡ AndroidHarness Assistant"
-            setTextColor(Color.parseColor("#38BDF8"))
-            textSize = 15f
+            text = "AndroidHarness · Drag to Move"
+            setTextColor(Color.parseColor("#F8FAFC"))
+            textSize = 13f
             paint.isFakeBoldText = true
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        val closeBtn = Button(this).apply {
-            text = "✕"
-            textSize = 14f
-            setTextColor(Color.parseColor("#94A3B8"))
-            setBackgroundColor(Color.TRANSPARENT)
-            setPadding(dp(6), dp(4), dp(6), dp(4))
-            setOnClickListener { hideOverlay() }
-        }
-        header.addView(title)
-        header.addView(closeBtn)
-        root.addView(header)
-
-        // Chat display area
-        val scroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            ).apply { topMargin = dp(8); bottomMargin = dp(8) }
-        }
-        val messageBox = TextView(this).apply {
-            text = "Ask anything with voice or text, or tap 'What's on screen?' to analyze whatever you are viewing!"
-            setTextColor(Color.parseColor("#E2E8F0"))
-            textSize = 13f
-            setLineSpacing(0f, 1.35f)
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(8).toFloat()
-                setColor(Color.parseColor("#1E293B"))
-            }
-        }
-        scroll.addView(messageBox)
-        root.addView(scroll)
-
-        // Actions row
-        val actionsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(8) }
-        }
 
         val screenBtn = Button(this).apply {
-            text = "📱 What's on screen?"
-            textSize = 11f
+            text = "Screen"
+            textSize = 10f
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
                 cornerRadius = dp(6).toFloat()
-                setColor(Color.parseColor("#334155"))
+                setColor(Color.parseColor("#1E293B"))
             }
-            setPadding(dp(10), dp(6), dp(10), dp(6))
+            setPadding(dp(8), dp(3), dp(8), dp(3))
             setOnClickListener {
                 val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 val clip = clipboard.primaryClip?.getItemAt(0)?.text?.toString()?.trim()
                 val prompt = if (!clip.isNullOrBlank()) {
-                    "Here is the text currently copied from my screen:\n$clip\nPlease summarize and explain this."
+                    "Analyze this copied screen content:\n$clip"
                 } else {
-                    "What's on my screen? Please provide a helpful answer or guide for the current task."
+                    "Help me with what I am currently working on."
                 }
-                askAssistant(prompt, messageBox)
+                dispatchOverlayPrompt(prompt)
             }
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                rightMargin = dp(6)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(28)).apply {
+                rightMargin = dp(4)
             }
         }
 
         val voiceBtn = Button(this).apply {
-            text = "🎙️ Voice"
-            textSize = 11f
+            text = "Mic"
+            textSize = 10f
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
                 cornerRadius = dp(6).toFloat()
-                setColor(Color.parseColor("#2563EB"))
+                setColor(Color.parseColor("#0284C7"))
             }
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            setOnClickListener {
-                startVoiceInput(messageBox)
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+            setOnClickListener { startVoiceInput() }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(28)).apply {
+                rightMargin = dp(4)
             }
         }
-        actionsRow.addView(screenBtn)
-        actionsRow.addView(voiceBtn)
-        root.addView(actionsRow)
 
-        // Input row
-        val inputRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val input = EditText(this).apply {
-            hint = "Ask or type task..."
-            setHintTextColor(Color.parseColor("#64748B"))
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            background = GradientDrawable().apply {
-                cornerRadius = dp(6).toFloat()
-                setColor(Color.parseColor("#1E293B"))
-                setStroke(dp(1), Color.parseColor("#334155"))
-            }
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                rightMargin = dp(6)
-            }
-        }
-        val sendBtn = Button(this).apply {
-            text = "Send"
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            background = GradientDrawable().apply {
-                cornerRadius = dp(6).toFloat()
-                setColor(Color.parseColor("#2563EB"))
-            }
+        val expandAppBtn = Button(this).apply {
+            text = "Full"
+            textSize = 10f
+            setTextColor(Color.parseColor("#38BDF8"))
+            setBackgroundColor(Color.TRANSPARENT)
+            setPadding(dp(6), dp(2), dp(6), dp(2))
             setOnClickListener {
-                val q = input.text.toString().trim()
-                if (q.isNotEmpty()) {
-                    input.setText("")
-                    askAssistant(q, messageBox)
+                val launch = Intent(this@FloatingBubbleService, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 }
+                hideOverlay()
+                startActivity(launch)
+            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(28))
+        }
+
+        val minimizeBtn = Button(this).apply {
+            text = "—"
+            textSize = 13f
+            setTextColor(Color.parseColor("#94A3B8"))
+            setBackgroundColor(Color.TRANSPARENT)
+            setPadding(dp(8), dp(2), dp(8), dp(2))
+            setOnClickListener { hideOverlay() }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(28))
+        }
+
+        header.addView(headerLogo)
+        header.addView(title)
+        header.addView(screenBtn)
+        header.addView(voiceBtn)
+        header.addView(expandAppBtn)
+        header.addView(minimizeBtn)
+
+        var headerStartX = 0
+        var headerStartY = 0
+        var headerTouchX = 0f
+        var headerTouchY = 0f
+        header.setOnTouchListener { _, ev ->
+            val p = overlayParams ?: return@setOnTouchListener false
+            val b = safeScreenBounds()
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    headerStartX = p.x
+                    headerStartY = p.y
+                    headerTouchX = ev.rawX
+                    headerTouchY = ev.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    p.x = (headerStartX + (ev.rawX - headerTouchX).toInt())
+                        .coerceIn(b.left, (b.right - p.width).coerceAtLeast(b.left))
+                    p.y = (headerStartY + (ev.rawY - headerTouchY).toInt())
+                        .coerceIn(b.top, (b.bottom - p.height).coerceAtLeast(b.top))
+                    savedOverlayX = p.x
+                    savedOverlayY = p.y
+                    runCatching { windowManager.updateViewLayout(root, p) }
+                    true
+                }
+                else -> false
             }
         }
-        inputRow.addView(input)
-        inputRow.addView(sendBtn)
-        root.addView(inputRow)
+        root.addView(header)
+
+        // Full AndroidHarness WebView hosting the complete synchronized app face
+        val webView = object : WebView(this) {
+            override fun onCheckIsTextEditor(): Boolean = true
+        }.apply {
+            setBackgroundColor(Color.parseColor("#090D16"))
+            isFocusable = true
+            isFocusableInTouchMode = true
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                databaseEnabled = true
+                cacheMode = WebSettings.LOAD_NO_CACHE
+                useWideViewPort = true
+                loadWithOverviewMode = true
+            }
+            webViewClient = WebViewClient()
+            webChromeClient = WebChromeClient()
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f,
+            )
+            loadUrl(LaptopConnectionActivity.localOverlayUrl(applicationContext))
+        }
+        overlayWebView = webView
+        root.addView(webView)
+
+        // Bottom resize bar so the user can resize the Messenger-style overlay anywhere on screen
+        val footerBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            setPadding(dp(10), dp(3), dp(10), dp(3))
+            setBackgroundColor(Color.parseColor("#0F172A"))
+        }
+        val resizeHint = TextView(this).apply {
+            text = "Synced with AndroidHarness Engine · Drag ◢ to resize"
+            textSize = 10f
+            setTextColor(Color.parseColor("#64748B"))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val resizeGrip = TextView(this).apply {
+            text = "◢"
+            textSize = 14f
+            setTextColor(Color.parseColor("#38BDF8"))
+            setPadding(dp(10), dp(2), dp(4), dp(2))
+        }
+
+        var startW = 0
+        var startH = 0
+        var resizeTouchX = 0f
+        var resizeTouchY = 0f
+        resizeGrip.setOnTouchListener { _, ev ->
+            val p = overlayParams ?: return@setOnTouchListener false
+            val b = safeScreenBounds()
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    startW = p.width
+                    startH = p.height
+                    resizeTouchX = ev.rawX
+                    resizeTouchY = ev.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val maxW = (b.right - p.x).coerceAtLeast(dp(260))
+                    val maxH = (b.bottom - p.y).coerceAtLeast(dp(320))
+                    p.width = (startW + (ev.rawX - resizeTouchX).toInt()).coerceIn(dp(260), maxW)
+                    p.height = (startH + (ev.rawY - resizeTouchY).toInt()).coerceIn(dp(320), maxH)
+                    savedOverlayWidth = p.width
+                    savedOverlayHeight = p.height
+                    runCatching { windowManager.updateViewLayout(root, p) }
+                    true
+                }
+                else -> false
+            }
+        }
+
+        footerBar.addView(resizeHint)
+        footerBar.addView(resizeGrip)
+        root.addView(footerBar)
 
         overlayView = root
         windowManager.addView(root, overlayParams)
     }
 
-    private fun startVoiceInput(messageBox: TextView) {
+    private fun startVoiceInput() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             Toast.makeText(this, "Speech recognition not available on this device", Toast.LENGTH_SHORT).show()
             return
         }
-        messageBox.text = "🎙️ Listening... Speak now!"
+        Toast.makeText(this, "Listening... Speak your prompt", Toast.LENGTH_SHORT).show()
         speechRecognizer?.destroy()
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
             setRecognitionListener(object : RecognitionListener {
@@ -369,13 +549,13 @@ class FloatingBubbleService : Service() {
                 override fun onBufferReceived(buffer: ByteArray?) {}
                 override fun onEndOfSpeech() {}
                 override fun onError(error: Int) {
-                    messageBox.text = "Voice recognition error ($error). You can type below."
+                    Toast.makeText(this@FloatingBubbleService, "Voice input error ($error)", Toast.LENGTH_SHORT).show()
                 }
                 override fun onResults(results: Bundle?) {
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     val text = matches?.firstOrNull()
                     if (!text.isNullOrBlank()) {
-                        askAssistant(text, messageBox)
+                        dispatchOverlayPrompt(text)
                     }
                 }
                 override fun onPartialResults(partialResults: Bundle?) {}
@@ -389,42 +569,51 @@ class FloatingBubbleService : Service() {
         }
     }
 
-    private fun askAssistant(prompt: String, messageBox: TextView) {
-        messageBox.text = "You: $prompt\n\nAI Team working..."
+    /** Routes voice or screen-context prompts through the authenticated local bridge connected to AppContainer. */
+    private fun dispatchOverlayPrompt(prompt: String) {
         scope.launch {
             val reply = withContext(Dispatchers.IO) {
                 queryLocalOrRemoteModel(prompt)
             }
-            messageBox.text = "You: $prompt\n\nAI: $reply"
-            speakText(reply)
+            overlayWebView?.evaluateJavascript("if(window.syncState) window.syncState();", null)
+            if (reply.isNotBlank()) {
+                speakText(reply)
+            }
         }
     }
 
     private fun queryLocalOrRemoteModel(prompt: String): String {
         return try {
+            LaptopConnectionActivity.ensureServerRunning(applicationContext)
             val port = LaptopConnectionActivity.activePort
             val url = java.net.URL("http://127.0.0.1:$port/api/chat")
             val conn = url.openConnection() as java.net.HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Authorization", "Bearer ${LaptopConnectionActivity.pairedToken}")
             conn.doOutput = true
             conn.connectTimeout = 8000
-            conn.readTimeout = 15000
+            conn.readTimeout = 45000
 
-            val json = org.json.JSONObject().put("prompt", prompt).toString()
+            val json = org.json.JSONObject()
+                .put("prompt", prompt)
+                .put("async", true)
+                .toString()
             conn.outputStream.use { it.write(json.toByteArray(Charsets.UTF_8)) }
 
             val response = conn.inputStream.bufferedReader().use { it.readText() }
             val resObj = org.json.JSONObject(response)
-            resObj.optString("reply", "Done.")
+            resObj.optString("reply", "")
         } catch (_: Exception) {
-            "I'm here to help! Connect to Wi-Fi/Hotspot or open AndroidHarness to run larger coding tasks."
+            ""
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         activeService = null
+        edgeSnapAnimator?.cancel()
+        edgeSnapAnimator = null
         scope.cancel()
         speechRecognizer?.destroy()
         speechRecognizer = null
@@ -433,7 +622,7 @@ class FloatingBubbleService : Service() {
         tts = null
         hideOverlay()
         bubbleView?.let {
-            windowManager.removeView(it)
+            runCatching { windowManager.removeView(it) }
             bubbleView = null
         }
     }
