@@ -1723,7 +1723,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   .mobile-tabs { display: none; background: #0F172A; border-bottom: 1px solid #1E293B; }
   .tab-btn { flex: 1; padding: 10px 4px; font-size: 12px; background: transparent; color: #94A3B8; border: none; border-bottom: 2px solid transparent; cursor: pointer; text-align: center; font-weight: 500; }
   .tab-btn.active { color: #38BDF8; border-bottom-color: #38BDF8; font-weight: 700; }
-  main { flex: 1; display: grid; grid-template-columns: 170px minmax(190px,1fr) minmax(240px,300px) minmax(240px,300px) minmax(220px,260px) minmax(220px,260px) minmax(220px,260px); min-height: 0; }
+  main { flex: 1; display: grid; grid-template-columns: 160px minmax(180px,1fr) minmax(220px,280px) minmax(220px,280px) minmax(210px,240px) minmax(210px,240px) minmax(210px,240px) minmax(210px,240px); min-height: 0; }
   .panel { border-right: 1px solid #1E293B; display: flex; flex-direction: column; min-height: 0; }
   .panel-header { padding: 9px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94A3B8; border-bottom: 1px solid #1E293B; display: flex; justify-content: space-between; align-items: center; }
   .file-list { flex: 1; overflow-y: auto; padding: 8px; }
@@ -1754,7 +1754,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   .decision-options label { display: flex; gap: 8px; align-items: flex-start; }
   .decision-options input { flex: 0 0 auto; margin-top: 2px; }
   .decision-answer { width: 100%; min-height: 70px; margin-top: 10px; resize: vertical; background: #0B1120; color: #F8FAFC; border: 1px solid #475569; border-radius: 6px; padding: 9px; font: inherit; }
-  @media (max-width: 1650px) {
+  @media (max-width: 1900px) {
     header { padding: 8px 12px; }
     .meta { display: none; }
     .mobile-tabs { display: flex; }
@@ -1786,6 +1786,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <button class="tab-btn" id="btn-tab-buildtest" data-tab="buildtest" onclick="switchMobileTab(this.dataset.tab)">✓ Build/Test</button>
   <button class="tab-btn" id="btn-tab-automations" data-tab="automations" onclick="switchMobileTab(this.dataset.tab)">◷ Automations</button>
   <button class="tab-btn" id="btn-tab-skills" data-tab="skills" onclick="switchMobileTab(this.dataset.tab)">✧ Skills</button>
+  <button class="tab-btn" id="btn-tab-settings" data-tab="settings" onclick="switchMobileTab(this.dataset.tab)">⚙ Settings</button>
 </nav>
 <main>
   <section class="panel" id="panel-files">
@@ -1795,6 +1796,11 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <section class="panel editor-wrap" id="panel-editor">
     <div class="panel-header"><span id="current-file">Select or create file</span><button onclick="saveCurrentFile()">Save</button></div>
     <textarea id="editor" placeholder="Select a workspace file or ask the AI to code..."></textarea>
+  </section>
+  <section class="panel" id="panel-settings" style="border-right:none">
+    <div class="panel-header"><span>App Settings</span><span id="settings-theme">Loading…</span></div>
+    <div id="settings-list" style="flex:1;min-height:0;overflow:auto;padding:9px;display:flex;flex-direction:column;gap:8px"></div>
+    <div style="padding:8px;border-top:1px solid #1E293B;color:#94A3B8;font-size:10px">Changes are saved to the native AndroidHarness settings on the phone. Device-only settings remain in the Android app.</div>
   </section>
   <section class="panel" id="panel-skills" style="border-right:none">
     <div class="panel-header"><span>Skills</span><span id="skills-count">Loading…</span></div>
@@ -2193,6 +2199,31 @@ async function deleteRemoteSkill(name) {
     if (!res.ok || !data.ok) throw new Error(data.error || "Unable to delete skill");
     const preview = document.getElementById("skill-preview"); preview.style.display = "none"; preview.textContent = ""; await loadRemoteSkills();
   } catch (error) { alert(error.message || "Unable to delete skill"); }
+}
+let settingsRefreshInFlight = false;
+const remoteSettingLabels = {runInBackground:"Allow runs in background",notificationsEnabled:"Notifications",keepAlive:"Keep agent alive",liveUpdatesEnabled:"Android Live Updates",repoMapEnabled:"Repository map context",showLiveCode:"Show live code",memoryEnabled:"Project and chat memory",runTipsEnabled:"Tips during runs",allowScreenshots:"Allow screenshots"};
+async function loadRemoteSettings() {
+  if (settingsRefreshInFlight || !sessionToken) return;
+  settingsRefreshInFlight = true;
+  try {
+    const res = await apiFetch("/api/settings"); const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to load settings");
+    document.getElementById("settings-theme").textContent = data.themeMode || "Settings";
+    const host = document.getElementById("settings-list"); host.replaceChildren();
+    Object.entries(remoteSettingLabels).forEach(([key,label]) => {
+      const row = document.createElement("div"); row.style.cssText = "padding:9px;border:1px solid #334155;border-radius:8px;background:#0F172A;display:flex;align-items:center;gap:8px";
+      const text = document.createElement("div"); text.textContent = label; text.style.cssText = "flex:1;font-size:11px;line-height:1.35";
+      const toggle = document.createElement("button"); toggle.textContent = data[key] ? "ON" : "OFF"; toggle.className = data[key] ? "" : "btn-secondary"; toggle.style.cssText = "min-width:52px;padding:6px 8px;font-size:10px";
+      toggle.onclick = () => setRemoteSetting(key,!data[key]);
+      row.append(text,toggle); host.appendChild(row);
+    });
+  } catch (error) { document.getElementById("settings-theme").textContent = "Unavailable"; }
+  finally { settingsRefreshInFlight = false; }
+}
+async function setRemoteSetting(key,enabled) {
+  try { const res = await apiFetch("/api/settings/toggle", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key,enabled})}); const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "Unable to save setting"); await loadRemoteSettings();
+  } catch (error) { alert(error.message || "Unable to save setting"); }
 }
 function switchMobileTab(tab) {
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -2748,6 +2779,7 @@ document.getElementById("project-select").addEventListener("change", updateProje
 document.getElementById("project-select").addEventListener("change", loadRemoteAutomations);
 loadFiles();
 loadChatHistory();
+loadRemoteSettings();
 loadRemoteSkills();
 loadRemoteAutomations();
 refreshRemoteTerminal();
@@ -2760,6 +2792,7 @@ setInterval(refreshRemoteTerminal, 1800);
 setInterval(refreshRemoteBuildTest, 2500);
 setInterval(loadRemoteAutomations, 7000);
 setInterval(loadRemoteSkills, 12000);
+setInterval(loadRemoteSettings, 15000);
 </script></body></html>"""
     }
 }
