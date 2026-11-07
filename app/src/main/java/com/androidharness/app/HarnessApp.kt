@@ -194,7 +194,7 @@ class AppContainer(val appContext: Context) {
         linuxEnv.deployStateListener = { shizuku.invalidateDeployState() }
     }
 
-    val updates = com.androidharness.app.data.update.UpdateManager(appContext, deviceAccess)
+    val updates by lazy { com.androidharness.app.data.update.UpdateManager(appContext, deviceAccess) }
     internal val sync by lazy { com.androidharness.app.data.transfer.SyncManager(keys, sshConnections) { fs, action ->
         runManager.withIdleWorkspace(fs, "Stop running tasks in this workspace before syncing files.", action)
     } }
@@ -245,7 +245,8 @@ class AppContainer(val appContext: Context) {
     }
 
     private val cavemanSettings = AtomicReference(com.androidharness.app.data.AppSettings())
-    val skills = com.androidharness.app.skills.SkillStore(
+    val skills by lazy {
+        com.androidharness.app.skills.SkillStore(
         bundled = com.androidharness.app.skills.SkillAssets.load(appContext.assets),
         userDir = java.io.File(appContext.filesDir, "skills").apply { mkdirs() },
         projectDir = { projectSkillsDir },
@@ -254,6 +255,7 @@ class AppContainer(val appContext: Context) {
             if (cavemanSettings.get().cavemanInstalled) com.androidharness.app.caveman.CavemanPolicy.skills else emptyMap()
         },
     )
+    }
     val browser = com.androidharness.app.browser.BrowserController(appContext, images)
     val registry = ToolRegistry.default(
         fetchClient, todoStore, backgroundProcesses, linuxEnv, shizuku, shellRouter, skills, codeGraph,
@@ -351,13 +353,13 @@ class AppContainer(val appContext: Context) {
         chatModels = chatModels,
         canRun = runtimePolicy::canRun,
     )
-    val githubRepositories = com.androidharness.app.github.GitHubWorkspaces(this)
-    val automation = com.androidharness.app.automation.AutomationManager(this)
-    val projectDeletion = com.androidharness.app.workspace.ProjectDeletion(this)
+    val githubRepositories by lazy { com.androidharness.app.github.GitHubWorkspaces(this) }
+    val automation by lazy { com.androidharness.app.automation.AutomationManager(this) }
+    val projectDeletion by lazy { com.androidharness.app.workspace.ProjectDeletion(this) }
     internal var telegram = com.androidharness.app.telegram.TelegramManager(this)
-    val terminal = com.androidharness.app.data.TerminalManager(appContext, linuxEnv, shizuku, runManager, shellRouter)
-    val storage = com.androidharness.app.data.storage.StorageManager(this)
-    val projectChecks = com.androidharness.app.data.ProjectCheckStore(appContext, terminal)
+    val terminal by lazy { com.androidharness.app.data.TerminalManager(appContext, linuxEnv, shizuku, runManager, shellRouter) }
+    val storage by lazy { com.androidharness.app.data.storage.StorageManager(this) }
+    val projectChecks by lazy { com.androidharness.app.data.ProjectCheckStore(appContext, terminal) }
 
     /**
      * Applies a GitHub token change end-to-end: re-materialize the prefix
@@ -381,10 +383,16 @@ class AppContainer(val appContext: Context) {
                 AgentService.stop(appContext)
             }
         }, onAvailable = { telegram.restoreIfEnabled() })
-        // models.dev thinking-capability catalog: serve the cached copy
-        // synchronously, then refresh in the background (daily cadence).
-        com.androidharness.app.llm.ModelsDev.load(appContext)
-        kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        // Phase 6 & Bug 5: Offload disk I/O (ModelsDev cache parse, skill asset indexing,
+        // and persistent specialist team verification) to background IO scope so MainActivity
+        // renders its first frame immediately on cold start.
+        val ioScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        ioScope.launch {
+            settings.ensureSpecialistTeam()
+            com.androidharness.app.llm.ModelsDev.load(appContext)
+            com.androidharness.app.llm.ModelsDev.refresh(appContext)
+        }
+        ioScope.launch {
             combine(settings.settings, providers.providers) { saved, available -> saved to available.map { it.id }.toSet() }
                 .collect { (saved, availableIds) ->
                     val selected = listOf(saved.activeProviderId, saved.planningProviderId, saved.executionProviderId, saved.subagentProviderId)
@@ -393,13 +401,13 @@ class AppContainer(val appContext: Context) {
                     }
                 }
         }
-        kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        ioScope.launch {
             // Learned wire per Harness model (chat vs anthropic vs responses),
             // persisted by the first-request probe; mirrored into memory so
             // every request path reads it synchronously.
             providers.harnessWires.collect { com.androidharness.app.llm.HarnessProvider.pins = it }
         }
-        kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        ioScope.launch {
             // Restore routes before fetching; failed refreshes leave the cache intact.
             providers.providers.first()
             when (val result = com.androidharness.app.llm.ModelCatalog.listModels(
@@ -411,10 +419,10 @@ class AppContainer(val appContext: Context) {
                 is com.androidharness.app.llm.ModelCatalog.Result.Failed -> Unit
             }
         }
-        kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        ioScope.launch {
             com.androidharness.app.llm.ModelsDev.refresh(appContext)
         }
-        kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        ioScope.launch {
             settings.settings.collect {
                 disabledSkills.set(it.disabledSkills)
                 cavemanSettings.set(it)
@@ -426,7 +434,7 @@ class AppContainer(val appContext: Context) {
                 webSearchProvider.set(it.webSearchProvider)
             }
         }
-        kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        ioScope.launch {
             workspace.current.collect { fs ->
                 projectSkillsDir = fs.shellRoot?.resolve(".harness/skills")
             }
@@ -434,7 +442,7 @@ class AppContainer(val appContext: Context) {
         // Regenerate the linker shims the moment the environment is ready: an
         // older format (broken argv[0] for coreutils applets) must not survive
         // an app update, and the header check makes this a no-op when current.
-        kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        ioScope.launch {
             linuxEnv.state.collect {
                 if (it is com.androidharness.app.data.env.EnvState.Ready) linuxEnv.ensureShims()
             }
@@ -442,7 +450,7 @@ class AppContainer(val appContext: Context) {
         // Eagerly deploy the shell-user toolchain copy the moment both the
         // Linux environment and Shizuku are ready, so every tier works from
         // the first command (foreground shell, background spawn, terminal).
-        kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        ioScope.launch {
             // include serviceState so a retry fires once the user service binds
             combine(linuxEnv.state, shizuku.state, shizuku.serviceState) { e, s, v -> Triple(e, s, v) }
                 .collect { (e, s, v) ->
@@ -459,7 +467,7 @@ class AppContainer(val appContext: Context) {
         // that were interrupted and reinstall packages whose binaries
         // vanished. Silent when the prefix is already healthy; network
         // failures never demote a Ready environment (retried next launch).
-        kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        ioScope.launch {
             val repaired = linuxEnv.repairIfNeeded()
             // A repair changes prefix content (reinstalled pip, rewritten
             // shebangs) without necessarily changing the package-set hash, and
