@@ -14,11 +14,15 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.androidharness.app.core.ChatMessage
-import com.androidharness.app.core.Role
+import com.androidharness.app.data.ConversationConfig
+import com.androidharness.app.data.ConversationKind
+import com.androidharness.app.llm.effectiveApiKey
 import com.androidharness.app.llm.HarnessProvider
 import com.androidharness.app.llm.RequestOptions
 import com.androidharness.app.llm.StreamEvent
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -257,6 +261,40 @@ class LaptopConnectionActivity : AppCompatActivity() {
         )
         private val chatHistoryLock = Any()
         private val bridgeChatBusy = AtomicBoolean(false)
+        private const val REMOTE_SESSION_PREFS = "androidharness_remote_bridge"
+        private const val REMOTE_SESSION_KEY = "shared_chat_session_id"
+
+        /**
+         * The remote browser is a client of the native chat engine, not a separate
+         * provider-backed chatbot. Keep one app-managed CHAT session for all bridge clients.
+         */
+        private suspend fun getOrCreateRemoteSession(app: HarnessApp): String {
+            val container = app.container
+            val prefs = app.getSharedPreferences(REMOTE_SESSION_PREFS, Context.MODE_PRIVATE)
+            val existing = prefs.getString(REMOTE_SESSION_KEY, null)
+            if (!existing.isNullOrBlank() && container.sessions.session(existing) != null) {
+                return existing
+            }
+            val id = container.sessions.createSession(
+                title = "AndroidHarness Remote",
+                conversation = ConversationConfig(kind = ConversationKind.CHAT),
+            )
+            container.chatModels.initialize(id)
+            prefs.edit().putString(REMOTE_SESSION_KEY, id).apply()
+            return id
+        }
+
+        private fun remoteHistoryJson(messages: List<ChatMessage>): JSONArray = JSONArray().apply {
+            messages.asSequence()
+                .filter { it.role == com.androidharness.app.core.Role.USER ||
+                    it.role == com.androidharness.app.core.Role.ASSISTANT }
+                .takeLast(40)
+                .forEach { message ->
+                    put(JSONObject()
+                        .put("role", message.role.name.lowercase())
+                        .put("content", message.text))
+                }
+        }
 
         // A per-installation bridge secret. The paired URL is shown only on the phone.
         internal fun localBridgeAuthorization(): String = "Bearer $bridgeToken"
