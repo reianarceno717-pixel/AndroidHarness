@@ -702,7 +702,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     val messages = container.sessions.messages(sessionId)
                                     val history = remoteHistoryJson(messages)
                                     val reply = messages.lastOrNull {
-                                        it.role == com.androidharness.app.core.Role.ASSISTANT
+                                        it.role == com.androidharness.app.core.Role.ASSISTANT &&
+                                            (completed.turnId == null || it.turnId == completed.turnId)
                                     }?.text.orEmpty()
                                     val activeModel = container.runManager.controls.flow(sessionId).value.provider?.model
                                         ?: config.model
@@ -721,7 +722,11 @@ class LaptopConnectionActivity : AppCompatActivity() {
                                     "application/json; charset=utf-8", response.toString())
                             } else {
                                 val error = result.exceptionOrNull()
-                                val status = if (error is kotlinx.coroutines.TimeoutCancellationException) 504 else 502
+                                val status = when (error) {
+                                    is kotlinx.coroutines.TimeoutCancellationException -> 504
+                                    is com.androidharness.app.agent.RunBusyException -> 409
+                                    else -> 502
+                                }
                                 val message = error?.message ?: "AndroidHarness agent execution failed"
                                 writeHttpResponse(sock, status, "application/json; charset=utf-8",
                                     JSONObject().put("ok", false).put("error", message).toString())
