@@ -422,7 +422,7 @@ class RunManager(
         }
         // GOD-AI Instant Smart Auto-Switch Router: automatically selects Vision, Coding, or Fast Free model
         val taskCategory = com.androidharness.app.llm.SmartAutoRouter.classify(text, imageRefs)
-        val routed = if (allowModelFallback && conversation.agent == null) {
+        val routed = if (allowModelFallback && conversation.agent == null && config.id == com.androidharness.app.llm.HarnessProvider.ID && config.model == com.androidharness.app.llm.HarnessProvider.DEFAULT_MODEL) {
             val avail = runCatching { providers.providers.first() }.getOrDefault(emptyList())
             val cats = runCatching { providers.catalogs.first() }.getOrDefault(emptyMap())
             com.androidharness.app.llm.SmartAutoRouter.routeModel(taskCategory, config, avail, cats)
