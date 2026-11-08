@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - main
+      - feature/six-phase-upgrade-v2
     paths:
       - "app/**"
       - ".github/workflows/nightly.yml"
