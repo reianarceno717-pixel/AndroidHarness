@@ -72,9 +72,9 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
         statusText = findViewById(R.id.laptop_status)
         addressText = findViewById(R.id.laptop_ip)
-        shortLinkText = findViewById(R.id.laptop_short_link)
-        qrImageView = findViewById(R.id.laptop_qr_image)
-        usbCableButton = findViewById(R.id.laptop_usb_cable_button)
+        shortLinkText = findViewById(R.id.laptop_short_link) ?: TextView(this)
+        qrImageView = findViewById(R.id.laptop_qr_image) ?: ImageView(this)
+        usbCableButton = findViewById(R.id.laptop_usb_cable_button) ?: Button(this)
         enableButton = findViewById(R.id.laptop_enable_button)
         copyButton = findViewById(R.id.laptop_copy_button)
 
