@@ -11,6 +11,12 @@ class QrBitmapGeneratorTest {
     fun `encodes standard qr code cleanly`() {
         val qr = QrCode.encodeText("http://god-ai.local:8765/c", QrCode.Ecc.MEDIUM)
         assertNotNull(qr)
-        assertTrue(qr.size >= 21) // Version 1 is at least 21x21 modules
+        assertTrue(qr.size >= 21)
+    }
+
+    @Test
+    fun `verifies qr modules geometry`() {
+        val qr = QrCode.encodeText("http://192.168.42.1:8765/c", QrCode.Ecc.MEDIUM)
+        assertTrue(qr.getModule(0, 0)) // Top-left position pattern finder corner is black
     }
 }
