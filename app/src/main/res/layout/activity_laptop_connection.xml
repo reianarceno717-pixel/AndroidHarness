@@ -58,6 +58,24 @@
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/laptop_short_link"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Short link: Not connected"
+                android:textColor="#555555"
+                android:textSize="13sp" />
+
+            <ImageView
+                android:id="@+id/laptop_qr_image"
+                android:layout_width="240dp"
+                android:layout_height="240dp"
+                android:layout_gravity="center"
+                android:layout_marginTop="12dp"
+                android:contentDescription="QR code to connect to AndroidHarness"
+                android:scaleType="fitCenter" />
+
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
@@ -67,10 +85,17 @@
         </LinearLayout>
 
         <Button
-            android:id="@+id/laptop_enable_button"
+            android:id="@+id/laptop_usb_cable_button"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:text="Connect using USB cable" />
+
+        <Button
+            android:id="@+id/laptop_enable_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
             android:text="@string/laptop_enable_tethering" />
 
         <Button
