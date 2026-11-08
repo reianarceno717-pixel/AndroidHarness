@@ -591,7 +591,7 @@ class FloatingBubbleService : Service(), TextToSpeech.OnInitListener {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, footerHeightPx)
         }
         val resizeHint = TextView(this).apply {
-            text = "6-Dev AI Team · Background Protected · Drag ◢ to resize"
+            text = "GOD-AI · Smart Auto-Switch · Drag ◢ to resize"
             textSize = 9.5f
             setTextColor(Color.parseColor("#8E9099"))
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)

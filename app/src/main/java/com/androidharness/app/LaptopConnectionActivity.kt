@@ -27,6 +27,8 @@ import com.androidharness.app.data.ConversationConfig
 import com.androidharness.app.data.ConversationKind
 import com.androidharness.app.data.PersistentSpecialistTeam
 import com.androidharness.app.llm.FreeTierProviderCatalog
+import com.androidharness.app.qrcode.QrBitmapGenerator
+import android.widget.ImageView
 import kotlinx.coroutines.flow.first
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -56,6 +58,9 @@ class LaptopConnectionActivity : AppCompatActivity() {
     private var isTetheringEnabled = false
     private lateinit var statusText: TextView
     private lateinit var addressText: TextView
+    private lateinit var shortLinkText: TextView
+    private lateinit var qrImageView: ImageView
+    private lateinit var usbCableButton: Button
     private lateinit var enableButton: Button
     private lateinit var copyButton: Button
 
@@ -67,8 +72,15 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
         statusText = findViewById(R.id.laptop_status)
         addressText = findViewById(R.id.laptop_ip)
+        shortLinkText = findViewById(R.id.laptop_short_link)
+        qrImageView = findViewById(R.id.laptop_qr_image)
+        usbCableButton = findViewById(R.id.laptop_usb_cable_button)
         enableButton = findViewById(R.id.laptop_enable_button)
         copyButton = findViewById(R.id.laptop_copy_button)
+
+        usbCableButton.setOnClickListener {
+            startUsbTethering()
+        }
 
         ensureServerRunning(applicationContext)
 
@@ -131,12 +143,20 @@ class LaptopConnectionActivity : AppCompatActivity() {
 
     private fun activateBridgeUi(ip: String) {
         val url = "http://$ip:$activePort/?token=$bridgeToken"
+        val shortUrl = "http://$ip:$activePort/c"
         statusText.text = getString(R.string.laptop_status_tethering_on)
         statusText.setTextColor(Color.parseColor("#15803D"))
         isTetheringEnabled = true
         enableButton.text = getString(R.string.laptop_disable_tethering)
         copyButton.isEnabled = true
         addressText.text = url
+        shortLinkText.text = "Short link: $shortUrl"
+
+        // Generate instant QR Code for zero-typing connect on laptop or 2nd phone
+        runCatching {
+            val qrBitmap = QrBitmapGenerator.createQrBitmap(url, sizePx = 480)
+            qrImageView.setImageBitmap(qrBitmap)
+        }
     }
 
     private fun stopUsbTethering() {
@@ -497,6 +517,14 @@ class LaptopConnectionActivity : AppCompatActivity() {
                 }
 
                 val queryToken = query.split("&").firstOrNull { it.startsWith("token=") }?.substringAfter("token=").orEmpty()
+                // Instant short link redirect: http://<ip>:8765/c redirects automatically to the authorized UI with cookie/token
+                if (method == "GET" && (path == "/c" || path == "/connect" || path == "/god-ai")) {
+                    val redirectUrl = "/?token=$bridgeToken"
+                    val headers = "HTTP/1.1 302 Found\r\nLocation: $redirectUrl\r\nSet-Cookie: godai_token=$bridgeToken; Path=/; SameSite=Lax\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    sock.getOutputStream().write(headers.toByteArray(Charsets.UTF_8))
+                    sock.getOutputStream().flush()
+                    return
+                }
                 if (path.startsWith("/api/") && authorization != "Bearer $bridgeToken" && queryToken != bridgeToken) {
                     writeHttpResponse(sock, 401, "application/json; charset=utf-8", """{"error":"Unauthorized. Open the paired link shown in AndroidHarness."}""")
                     return
@@ -1624,7 +1652,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
   <div class="sheet-backdrop" id="teamSheet" onclick="if(event.target===this)closeSheets()">
     <div class="modal-sheet">
       <div class="sheet-header">
-        <div class="sheet-title">👥 Persistent 6-Developer AI Specialist Team</div>
+        <div class="sheet-title">⚡ Instant Smart Auto-Switch (Vision · Code · Fast Free)</div>
         <button class="icon-btn" onclick="closeSheets()">✕</button>
       </div>
       <div class="sheet-body" id="teamSheetBody"></div>
@@ -1832,7 +1860,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
       const headline = activeSpec ? activeSpec.name : 'What do you want to build?';
       const subtitle = activeSpec
         ? activeSpec.description
-        : 'Start with an idea, or build across your workspace with the 6-Developer AI Specialist Team.';
+        : 'Type a prompt or upload an image. GOD-AI automatically chooses the optimal Vision, Coding, or Fast Free model.';
       const suggestions = (activeSpec && activeSpec.starters && activeSpec.starters.length)
         ? activeSpec.starters
         : [
@@ -1948,7 +1976,7 @@ class LaptopConnectionActivity : AppCompatActivity() {
     const liveStrip = document.getElementById('liveStatusStrip');
     if (live.running || live.retryStatus) {
       liveStrip.classList.add('active');
-      document.getElementById('liveStatusText').textContent = live.retryStatus || live.actionText || 'AI Specialist Team working in background…';
+      document.getElementById('liveStatusText').textContent = live.retryStatus || live.actionText || 'GOD-AI thinking & generating in background…';
     } else {
       liveStrip.classList.remove('active');
     }

@@ -28,33 +28,74 @@
             android:textColor="#444444"
             android:textSize="14sp" />
 
+        <!-- Instant QR Code & Short Link Card -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
             android:background="#FFFFFF"
+            android:gravity="center_horizontal"
             android:orientation="vertical"
             android:padding="16dp">
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="@string/laptop_address_label"
+                android:text="Scan QR Code to Connect"
                 android:textColor="#1B1B1F"
                 android:textSize="16sp"
                 android:textStyle="bold" />
 
             <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Point camera or phone scanner to open GOD-AI immediately"
+                android:textColor="#555555"
+                android:textSize="12sp" />
+
+            <ImageView
+                android:id="@+id/laptop_qr_image"
+                android:layout_width="220dp"
+                android:layout_height="220dp"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="12dp"
+                android:background="#F8FAFC"
+                android:contentDescription="GOD-AI Connection QR Code"
+                android:padding="8dp"
+                android:scaleType="fitCenter" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/laptop_address_label"
+                android:textColor="#1B1B1F"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <!-- Clean Short Link & Local Connect -->
+            <TextView
                 android:id="@+id/laptop_ip"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:gravity="center"
-                android:padding="12dp"
+                android:layout_marginTop="6dp"
                 android:background="#F2EAFB"
+                android:gravity="center"
+                android:padding="10dp"
                 android:text="@string/laptop_address_placeholder"
                 android:textColor="#1B1B1F"
-                android:textSize="20sp"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/laptop_short_link"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:gravity="center"
+                android:text="Short link: http://god-ai.local:8765/c"
+                android:textColor="#6750A4"
+                android:textSize="13sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -63,14 +104,22 @@
                 android:layout_marginTop="8dp"
                 android:text="@string/laptop_type_hint"
                 android:textColor="#555555"
-                android:textSize="13sp" />
+                android:textSize="12sp" />
         </LinearLayout>
+
+        <!-- USB-C Cable Auto-Bridge & Tethering Buttons -->
+        <Button
+            android:id="@+id/laptop_usb_cable_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Plug-In USB Cable Bridge (Auto-Tether)" />
 
         <Button
             android:id="@+id/laptop_enable_button"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="8dp"
             android:text="@string/laptop_enable_tethering" />
 
         <Button
