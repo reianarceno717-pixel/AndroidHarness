@@ -756,9 +756,49 @@ class AgentEngine(
                     !conversation.isChat &&
                     mode == AgentMode.ACT &&
                     roundRegistry.get("task") != null &&
-                    false
+                    calls.none { it.id.startsWith("team-") }
                 ) {
-                    // Fake AI team removed: GOD-AI operates directly
+                    val userTask = working.lastOrNull {
+                        it.role == Role.USER && !it.text.startsWith("Resume the interrupted task")
+                    }?.text?.trim() ?: working.lastOrNull { it.role == Role.USER }?.text?.trim().orEmpty()
+                    if (userTask.length >= 8) {
+                        val cleanTask = userTask.take(360)
+                            .replace("\\", "\\\\")
+                            .replace("\"", "\\\"")
+                            .replace("\n", " ")
+                            .replace("\r", " ")
+                        val shortTurn = turnId.filter { it.isLetterOrDigit() }.take(8).ifEmpty { "t1" }
+                        calls += ToolCallData(
+                            id = "team-arch-$shortTurn",
+                            name = "task",
+                            argumentsJson = """{"name":"Lead Systems Architect","model":"cohere/north-mini-code:free","prompt":"Produce a concise file structure, module contract, and system architecture blueprint for: $cleanTask"}""",
+                        )
+                        calls += ToolCallData(
+                            id = "team-backend-$shortTurn",
+                            name = "task",
+                            argumentsJson = """{"name":"Full-Stack & Backend Developer","model":"z-ai/glm-5.1-air:free","prompt":"Design backend services, API routes, state persistence, and data synchronization for: $cleanTask"}""",
+                        )
+                        calls += ToolCallData(
+                            id = "team-ui-$shortTurn",
+                            name = "task",
+                            argumentsJson = """{"name":"UI/UX, Compose & 3D Developer","model":"nvidia/nemotron-3.5-super-vl:free","prompt":"Design the native-parity UI layout, responsive components, and interactive visual polish for: $cleanTask"}""",
+                        )
+                        calls += ToolCallData(
+                            id = "team-android-$shortTurn",
+                            name = "task",
+                            argumentsJson = """{"name":"Android Systems & Performance Engineer","model":"xiaomi/mimo-v3-flash:free","prompt":"Specify foreground service keepalive, WakeLocks, overlay responsiveness, and latency optimizations for: $cleanTask"}""",
+                        )
+                        calls += ToolCallData(
+                            id = "team-sec-$shortTurn",
+                            name = "task",
+                            argumentsJson = """{"name":"Security, Auth & DevOps Engineer","model":"cohere/north-mini-code:free","prompt":"Audit bearer authentication, permission boundaries, API key safety, and build pipeline integrity for: $cleanTask"}""",
+                        )
+                        calls += ToolCallData(
+                            id = "team-qa-$shortTurn",
+                            name = "task",
+                            argumentsJson = """{"name":"QA, Testing & Reliability Specialist","model":"nvidia/nemotron-3.5-lightning:free","prompt":"Analyze edge cases, provider quota fallback, logic invariants, and unit test coverage for: $cleanTask"}""",
+                        )
+                    }
                 }
                 val followUps = if (conversation.isChat)
                     com.androidharness.app.core.FollowUpSuggestions.extract(text.toString())
@@ -2320,7 +2360,7 @@ Rules:
 - When reporting file properties like newlines or byte counts, verify with a byte check (file_info or shell tail -c 3 | xxd) rather than inferring from line counts.
 - For Android logs, exceptions, or app crash investigations, use read_logcat instead of raw shell logcat commands. It supports level, tag, package_name, and buffer filtering.
 - For broad exploration whose raw output would flood this conversation (finding all usages, mapping a codebase, comparing many files), delegate to the task tool: it runs a subagent and returns only the final answer. When several independent explorations or build tasks are needed, issue ALL task calls in the SAME message: they run concurrently.
- - SMART AUTO-SWITCH: GOD-AI automatically selects the best Vision, Coding, or Fast Free model dynamically based on user requests.
+- MULTI-DEVELOPER SPECIALIST TEAM PARALLELISM: You lead a persistent 6-developer AI engineering team (Lead Systems Architect, Full-Stack & Backend Developer, UI/UX Compose & 3D Developer, Android Systems & Performance Engineer, Security Auth & DevOps Engineer, and QA Testing & Reliability Specialist). For complex or multi-file coding, 3D/web design, or multi-component requests, proactively divide the work across parallel `task` subagent calls in the SAME turn so the developer specialists work simultaneously for faster execution and higher-quality results.
 
 """.trim()
         )
