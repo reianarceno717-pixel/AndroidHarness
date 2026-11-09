@@ -350,6 +350,7 @@ class AppContainer(val appContext: Context) {
         repoMap = repoMap,
         chatModels = chatModels,
         canRun = runtimePolicy::canRun,
+        policy = runtimePolicy,
     )
     val githubRepositories = com.androidharness.app.github.GitHubWorkspaces(this)
     val automation = com.androidharness.app.automation.AutomationManager(this)

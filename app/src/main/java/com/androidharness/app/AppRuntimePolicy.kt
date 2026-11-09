@@ -14,15 +14,19 @@ internal data class AppRuntimeState(
     val ready: Boolean = false,
     val visible: Boolean = false,
     val runInBackground: Boolean = false,
+    val generationActive: Boolean = false,
     val notificationsEnabled: Boolean = false,
 ) {
-    val canRun: Boolean get() = ready && (visible || runInBackground)
+    /** A live generation keeps the app runnable even with the background preference off. */
+    val canRun: Boolean get() = ready && (visible || runInBackground || generationActive)
+    val serviceWanted: Boolean get() = runInBackground || generationActive
 }
 
 /** Tracks the whole app, including secondary activities, rather than an individual chat. */
 internal class AppRuntimePolicy(private val context: Context, private val settings: SettingsRepository) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val visible = MutableStateFlow(false)
+    private val generationActive = MutableStateFlow(false)
     private val mutable = MutableStateFlow(AppRuntimeState())
     val state = mutable.asStateFlow()
     private val started = mutableSetOf<Activity>()
@@ -49,7 +53,19 @@ internal class AppRuntimePolicy(private val context: Context, private val settin
         })
     }
 
-    suspend fun canRun(): Boolean = settings.settings.first().runInBackground || visible.value
+    /**
+     * A live generation holds the background allowance: the run keeps
+     * generating while the app is minimized, under the agent foreground
+     * service and its persistent notification, even if the user never
+     * turned on the "Run in background" preference. The hold is released
+     * when the last generation/task finishes.
+     */
+    fun holdGeneration(active: Boolean) {
+        generationActive.value = active
+    }
+
+    suspend fun canRun(): Boolean =
+        settings.settings.first().runInBackground || visible.value || generationActive.value
 
     suspend fun <T> whileAllowed(block: suspend () -> T): T = coroutineScope {
         if (!canRun()) throw BackgroundExecutionDisabled()
@@ -62,8 +78,8 @@ internal class AppRuntimePolicy(private val context: Context, private val settin
 
     fun start(onBackgroundDisabled: suspend () -> Unit, onAvailable: suspend () -> Unit) {
         scope.launch {
-            combine(settings.settings, visible) { saved, shown ->
-                AppRuntimeState(true, shown, saved.runInBackground, saved.notificationsEnabled)
+            combine(settings.settings, visible, generationActive) { saved, shown, generating ->
+                AppRuntimeState(true, shown, saved.runInBackground, generating, saved.notificationsEnabled)
             }.distinctUntilChanged().collect { next ->
                 val previous = mutable.value
                 mutable.value = next
@@ -72,12 +88,14 @@ internal class AppRuntimePolicy(private val context: Context, private val settin
                     withContext(Dispatchers.IO) { onBackgroundDisabled() }
                 } else {
                     if (!previous.canRun || next.visible && !previous.visible) onAvailable()
-                    if (next.runInBackground && (!previous.runInBackground || !previous.ready)) {
+                    // The foreground service (and its persistent notification) backs
+                    // both the background preference and any live generation hold.
+                    if (next.serviceWanted && (!previous.serviceWanted || !previous.ready)) {
                         runCatching {
-                            if (RuntimeNotifier.active.value) AgentService.acquireKeepalive(context)
+                            if (RuntimeNotifier.active.value || next.generationActive) AgentService.acquireKeepalive(context)
                             else if (next.visible) AgentService.startPersistent(context)
                         }
-                    } else if (!next.runInBackground) AgentService.stop(context)
+                    } else if (!next.serviceWanted) AgentService.stop(context)
                 }
             }
         }

@@ -69,6 +69,8 @@ class RunManager(
     private val chatModels: com.androidharness.app.data.ChatModelRepository =
         com.androidharness.app.data.ChatModelRepository(settings, providers, sessions),
     private val canRun: suspend () -> Boolean = { true },
+    /** App policy that grants a live generation a background hold (auto keepalive). */
+    private val policy: AppRuntimePolicy? = null,
 ) {
 
     val controls = TaskControlStore(java.io.File(context.filesDir, "task-controls"))
@@ -191,8 +193,14 @@ class RunManager(
     private val deltaBuffers = mutableMapOf<String, DeltaBuffers>()
 
     private val keepalive = KeepaliveTracker(
-        onAcquire = { runCatching { AgentService.acquireKeepalive(context) } },
-        onRelease = { runCatching { AgentService.releaseKeepalive(context) } },
+        onAcquire = {
+            runCatching { AgentService.acquireKeepalive(context) }
+            runCatching { policy?.holdGeneration(true) }
+        },
+        onRelease = {
+            runCatching { AgentService.releaseKeepalive(context) }
+            runCatching { policy?.holdGeneration(false) }
+        },
         onActiveChanged = { active ->
             RuntimeNotifier.setActive(active)
             if (!active) RuntimeNotifier.update(RuntimeNotifier.IDLE_STATUS)

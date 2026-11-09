@@ -32,4 +32,12 @@ class BackgroundSettingsTest {
             assertTrue(AppRuntimeState(ready = true, runInBackground = true, notificationsEnabled = notifications).canRun)
         }
     }
+
+    @Test fun `a live generation keeps the run going in the background`() {
+        // The auto keepalive: GOD-AI must keep generating when minimized even
+        // though the persistent background preference stays off.
+        assertTrue(AppRuntimeState(ready = true, generationActive = true).canRun)
+        assertTrue(AppRuntimeState(ready = true, generationActive = true).serviceWanted)
+        assertFalse(AppRuntimeState(ready = true, visible = true).serviceWanted)
+    }
 }

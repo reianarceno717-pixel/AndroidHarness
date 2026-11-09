@@ -229,7 +229,7 @@ class AgentService : Service() {
             val container = (applicationContext as HarnessApp).container
             combine(container.runtimePolicy.state, container.settings.settings) { policy, settings -> policy to settings.liveUpdatesEnabled }.collect { (policy, liveUpdates) ->
                 if (!policy.ready) return@collect
-                if (!policy.runInBackground) {
+                if (!policy.runInBackground && !policy.generationActive) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                     return@collect
@@ -244,7 +244,7 @@ class AgentService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if ((applicationContext as HarnessApp).container.runtimePolicy.state.value.let { it.ready && !it.runInBackground }) {
+        if ((applicationContext as HarnessApp).container.runtimePolicy.state.value.let { it.ready && !it.runInBackground && !it.generationActive }) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -548,7 +548,8 @@ class AgentService : Service() {
         fun stop(context: Context) { context.stopService(Intent(context, AgentService::class.java)) }
 
         fun startPersistent(context: Context) {
-            if ((context.applicationContext as? HarnessApp)?.container?.runtimePolicy?.state?.value?.runInBackground != true) return
+            if ((context.applicationContext as? HarnessApp)?.container?.runtimePolicy?.state?.value
+                    ?.let { it.runInBackground || it.generationActive } != true) return
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, AgentService::class.java).setAction(ACTION_START),
@@ -556,7 +557,8 @@ class AgentService : Service() {
         }
 
         fun acquireKeepalive(context: Context) {
-            if ((context.applicationContext as? HarnessApp)?.container?.runtimePolicy?.state?.value?.runInBackground != true) return
+            if ((context.applicationContext as? HarnessApp)?.container?.runtimePolicy?.state?.value
+                    ?.let { it.runInBackground || it.generationActive } != true) return
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, AgentService::class.java).setAction(ACTION_ACQUIRE_WAKELOCK),
