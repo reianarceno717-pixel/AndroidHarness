@@ -70,7 +70,7 @@ class RunManager(
         com.androidharness.app.data.ChatModelRepository(settings, providers, sessions),
     private val canRun: suspend () -> Boolean = { true },
     /** App policy that grants a live generation a background hold (auto keepalive). */
-    private val policy: AppRuntimePolicy? = null,
+    private val policy: com.androidharness.app.AppRuntimePolicy? = null,
 ) {
 
     val controls = TaskControlStore(java.io.File(context.filesDir, "task-controls"))

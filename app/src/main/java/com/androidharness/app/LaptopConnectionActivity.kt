@@ -471,8 +471,8 @@ class LaptopConnectionActivity : AppCompatActivity() {
                         // 1:1 face of the app, not a generic dark website.
                         val saved = runBlocking {
                             runCatching {
-                                appContextRef?.let { appContextRef ->
-                                    (appContextRef as? HarnessApp)?.container?.settings?.settings?.firstOrNull()
+                                appContextRef?.let { appContext ->
+                                    (appContext as? HarnessApp)?.container?.settings?.settings?.first()
                                 }
                             }.getOrNull()
                         }
