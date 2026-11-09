@@ -10,7 +10,7 @@ import com.androidharness.app.data.SettingsRepository
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
-internal data class AppRuntimeState(
+data class AppRuntimeState(
     val ready: Boolean = false,
     val visible: Boolean = false,
     val runInBackground: Boolean = false,
