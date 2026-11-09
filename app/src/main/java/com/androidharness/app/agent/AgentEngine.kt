@@ -9,6 +9,7 @@ import com.androidharness.app.data.ImageStore
 import com.androidharness.app.llm.LlmProvider
 import com.androidharness.app.llm.ProviderConfig
 import com.androidharness.app.llm.RequestOptions
+import com.androidharness.app.llm.SmartAutoRouter
 import com.androidharness.app.llm.hasResponseOutput
 import com.androidharness.app.llm.StreamEvent
 import com.androidharness.app.tools.FuzzyEdit
@@ -361,19 +362,20 @@ class AgentEngine(
         // Resolve first; delivery status is reconciled with the actual request bytes below.
         val resolvedHistory = chatHistory.map { it.withImagesResolved() }
         val turnHasImages = resolvedHistory.any { it.images.isNotEmpty() || it.imageData.isNotEmpty() }
-        // Smart dynamic model routing: when images are attached and the selected model is text-only,
-        // automatically switch to a vision-capable model in the provider catalog before stripping images.
-        if (!localChat && !imageCapable && turnHasImages) {
-            val catalogVisionModel = options.modelCatalogs[config.id]
-                ?.firstOrNull { it.imageInput == true || com.androidharness.app.llm.visionCapable(it.id) }
-                ?.id
-                ?: if (config.id == com.androidharness.app.llm.HarnessProvider.ID) com.androidharness.app.llm.HarnessProvider.DEFAULT_MODEL else null
-            if (catalogVisionModel != null && catalogVisionModel != config.model) {
-                config = config.copy(model = catalogVisionModel)
-                imageCapable = true
-                emit(AgentEvent.ProviderChanged(config, "Smart routing: switched to $catalogVisionModel for image support", persistSelection = false))
+        // Instant smart auto-switch: one router inspects the live turn (attached
+        // images, a coding task, a quick question) and picks the best model on
+        // the user's provider on the fly, with no manual team/model management.
+        // Only remote providers are rerouted; on-device models may lack vision.
+        val lastUserPrompt = resolvedHistory.lastOrNull { it.role == Role.USER }?.text?.trim().orEmpty()
+        if (!localChat) {
+            val routed = SmartAutoRouter.promptRoute(lastUserPrompt, turnHasImages, config, options.modelCatalogs)
+            if (routed.config != config && routed.reason != null) {
+                config = routed.config
+                emit(AgentEvent.ProviderChanged(config, routed.reason, persistSelection = false))
             }
         }
+        imageCapable = (options.modelCatalogs[config.id]?.firstOrNull { it.id == config.model }?.imageInput)
+            ?: com.androidharness.app.llm.visionCapable(config.model)
         val working = (if (conversation.isChat && imageCapable)
             ChatImageContext.attach(resolvedHistory, resolve = imageStore::resolve, load = imageStore::remoteImage) else resolvedHistory).toMutableList()
         // If no vision-capable model was available on this provider, strip image data as a safe fallback
@@ -750,41 +752,6 @@ class AgentEngine(
                 imageNudges++
                 working += ChatMessage(role = Role.USER, text = com.androidharness.app.core.ChatExperience.IMAGE_NUDGE)
             } else if (!answerless) {
-                if (iterations == 1 &&
-                    config.id == com.androidharness.app.llm.HarnessProvider.ID &&
-                    !localChat &&
-                    !conversation.isChat &&
-                    mode == AgentMode.ACT &&
-                    roundRegistry.get("task") != null &&
-                    calls.none { it.id.startsWith("team-") }
-                ) {
-                    val userTask = working.lastOrNull {
-                        it.role == Role.USER && !it.text.startsWith("Resume the interrupted task")
-                    }?.text?.trim() ?: working.lastOrNull { it.role == Role.USER }?.text?.trim().orEmpty()
-                    if (userTask.length >= 8) {
-                        val cleanTask = userTask.take(360)
-                            .replace("\\", "\\\\")
-                            .replace("\"", "\\\"")
-                            .replace("\n", " ")
-                            .replace("\r", " ")
-                        val shortTurn = turnId.filter { it.isLetterOrDigit() }.take(8).ifEmpty { "t1" }
-                        calls += ToolCallData(
-                            id = "team-arch-$shortTurn",
-                            name = "task",
-                            argumentsJson = """{"name":"Architecture & Code Lead","model":"cohere/north-mini-code:free","prompt":"Produce a concise file structure and architecture blueprint for: $cleanTask"}""",
-                        )
-                        calls += ToolCallData(
-                            id = "team-ui-$shortTurn",
-                            name = "task",
-                            argumentsJson = """{"name":"UI, 3D & Graphics Specialist","model":"nvidia/nemotron-3.5-super-vl:free","prompt":"Design the UI layout, 3D animations, and interactive components for: $cleanTask"}""",
-                        )
-                        calls += ToolCallData(
-                            id = "team-qa-$shortTurn",
-                            name = "task",
-                            argumentsJson = """{"name":"Testing & Logic Specialist","model":"nvidia/nemotron-3.5-lightning:free","prompt":"Analyze edge cases, error recovery, logic invariants, and test coverage for: $cleanTask"}""",
-                        )
-                    }
-                }
                 val followUps = if (conversation.isChat)
                     com.androidharness.app.core.FollowUpSuggestions.extract(text.toString())
                 else com.androidharness.app.core.FollowUpSuggestions(text.toString(), emptyList())
@@ -1772,53 +1739,6 @@ class AgentEngine(
         step("$label: ${prompt.take(80)}")
         step("Model: ${config.name} · ${config.model}")
         val provider = providerFactory(config)
-        if (parentCallId.startsWith("team-")) {
-            val rootFiles = runCatching {
-                workspace.resolve(".").list().take(20).joinToString(", ") {
-                    it.name + if (it.isDirectory) "/" else ""
-                }
-            }.getOrDefault("")
-            step("Workspace scan: ${rootFiles.ifBlank { "ready for new project files" }}")
-            val specialistText = StringBuilder()
-            val specialistPrompt = "You are ${title ?: "Specialist"} in a collaborative multi-model AI engineering team. " +
-                "Provide a concise, high-impact 4-bullet implementation blueprint with concrete file names and component details so the lead agent can build immediately."
-            try {
-                kotlinx.coroutines.withTimeoutOrNull(5_000L) {
-                    provider.streamChat(
-                        config = config,
-                        apiKey = apiKey,
-                        systemPrompt = specialistPrompt,
-                        messages = listOf(
-                            ChatMessage(
-                                role = Role.USER,
-                                text = "Workspace files: ${rootFiles.ifBlank { "(empty)" }}\nTask: $prompt",
-                            )
-                        ),
-                        tools = emptyList(),
-                        options = requestOptions.copy(
-                            maxOutputTokens = 450,
-                            thinking = ThinkingLevel.OFF,
-                        ),
-                    ).collect { ev ->
-                        if (ev is StreamEvent.TextDelta && ev.text.isNotEmpty()) {
-                            specialistText.append(ev.text)
-                            emitEvent(AgentEvent.SubagentPreview(parentCallId, specialistText.toString().takeLast(260)))
-                        }
-                    }
-                }
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (_: Throwable) {
-                // Fall back to deterministic specialist summary if network is congested
-            }
-            val finalOut = specialistText.toString().trim().ifBlank {
-                "[$label Blueprint]\n• Modular structure ready in workspace (${rootFiles.ifBlank { "clean root" }})\n• Build responsive layout, interactive 3D/motion components, and clean state management."
-            }
-            step("Completed blueprint (${finalOut.length} chars)")
-            val committed = ChatMessage(role = Role.ASSISTANT, text = finalOut, toolCallId = parentCallId)
-            emitEvent(AgentEvent.SubagentMessageCommitted(parentCallId, committed))
-            return ToolResult(true, finalOut)
-        }
         // Subagent answers are folded back into the parent's context, so the
         // reply style applies here too. Code, paths and quoted errors stay exact.
         val caveman = cavemanSettings()
