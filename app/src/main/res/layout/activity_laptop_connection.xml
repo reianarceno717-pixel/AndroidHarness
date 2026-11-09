@@ -48,14 +48,77 @@
                 android:id="@+id/laptop_ip"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
                 android:gravity="center"
                 android:padding="12dp"
                 android:background="#F2EAFB"
+                android:fontFamily="monospace"
                 android:text="@string/laptop_address_placeholder"
                 android:textColor="#1B1B1F"
-                android:textSize="20sp"
+                android:textSize="18sp"
                 android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <ImageView
+                    android:id="@+id/laptop_qr"
+                    android:layout_width="120dp"
+                    android:layout_height="120dp"
+                    android:layout_marginEnd="12dp"
+                    android:contentDescription="@string/laptop_qr_desc"
+                    android:background="#FFFFFF"
+                    android:padding="6dp" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/laptop_scan_hint"
+                        android:textColor="#555555"
+                        android:textSize="13sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/laptop_connect_code_label"
+                            android:textColor="#555555"
+                            android:textSize="13sp" />
+
+                        <TextView
+                            android:id="@+id/laptop_connect_code"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:background="#F2EAFB"
+                            android:fontFamily="monospace"
+                            android:letterSpacing="0.3"
+                            android:paddingStart="10dp"
+                            android:paddingEnd="10dp"
+                            android:paddingTop="4dp"
+                            android:paddingBottom="4dp"
+                            android:text="@string/laptop_address_placeholder"
+                            android:textColor="#1B1B1F"
+                            android:textSize="18sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
 
             <TextView
                 android:layout_width="match_parent"
@@ -80,6 +143,41 @@
             android:layout_marginTop="8dp"
             android:enabled="false"
             android:text="@string/laptop_copy_address" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="#FFFFFF"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/laptop_usb_title"
+                android:textColor="#1B1B1F"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/laptop_usb_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:fontFamily="monospace"
+                android:textIsSelectable="true"
+                android:text="@string/laptop_usb_hint"
+                android:textColor="#333333"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/laptop_usb_copy"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/laptop_usb_copy" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"

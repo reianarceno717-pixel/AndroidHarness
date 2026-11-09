@@ -6,16 +6,23 @@
     <string name="laptop_section_desc" translatable="false">Connect any other phone or laptop to this phone via Wi-Fi hotspot, local network, or Type-C cable. The address below opens the full AndroidHarness AI agent studio in the other device\'s browser — zero installation needed on the other device.</string>
     <string name="laptop_open_button" translatable="false">Open virtual bridge</string>
     <string name="laptop_status_idle" translatable="false">Bridge active · Connect other phone to Hotspot/Wi-Fi</string>
-    <string name="laptop_status_tethering_on" translatable="false">Bridge ready — type address in browser on the other phone/laptop</string>
+    <string name="laptop_status_tethering_on" translatable="false">Bridge ready — scan the QR code, or type the short URL + 6-digit code</string>
     <string name="laptop_status_tethering_off" translatable="false">Turn on Hotspot or connect to Wi-Fi to get address</string>
     <string name="laptop_status_unavailable" translatable="false">Hotspot/Tethering settings available in Android Settings → Network → Hotspot &amp; tethering</string>
-    <string name="laptop_address_label" translatable="false">Address for other phone or laptop</string>
+    <string name="laptop_address_label" translatable="false">Short connect URL (shown in the browser too)</string>
     <string name="laptop_address_placeholder" translatable="false">—</string>
-    <string name="laptop_type_hint" translatable="false">On the second phone or laptop, open Chrome or Safari and enter this URL to chat, speak with voice, and edit workspace files.</string>
+    <string name="laptop_qr_desc" translatable="false">GOD-AI connect QR code</string>
+    <string name="laptop_scan_hint" translatable="false">Zero typing: scan this QR code with the laptop webcam or a second phone to pair instantly.</string>
+    <string name="laptop_connect_code_label" translatable="false">Or a 6-digit code the browser asks for:</string>
+    <string name="laptop_type_hint" translatable="false">On the second phone or laptop, open Chrome or Safari, go to this URL, and enter the code. The GOD-AI window that opens is a live mirror of this phone\'s app — chat and workspace, streamed from the phone.</string>
     <string name="laptop_enable_tethering" translatable="false">Open Hotspot &amp; tethering settings</string>
     <string name="laptop_disable_tethering" translatable="false">Refresh network address</string>
-    <string name="laptop_copy_address" translatable="false">Copy address</string>
+    <string name="laptop_copy_address" translatable="false">Copy short URL</string>
     <string name="laptop_copied" translatable="false">Address copied</string>
+    <string name="laptop_usb_title" translatable="false">USB-C cable bridge (no Wi-Fi needed)</string>
+    <string name="laptop_usb_hint" translatable="false">Plug the USB-C cable, enable USB tethering (button above), then on the laptop browse the address above.\n\nDevelopers: a laptop with adb tools can skip tethering entirely:\n\nadb reverse tcp:8080 tcp:8080\n→ then open http://127.0.0.1:8080 on the laptop.</string>
+    <string name="laptop_usb_copy" translatable="false">Copy adb reverse command</string>
+    <string name="laptop_usb_copied" translatable="false">Command copied</string>
     <string name="laptop_howto_title" translatable="false">How to connect virtually from another phone</string>
-    <string name="laptop_howto_body" translatable="false">1. Turn on Wi-Fi Hotspot on this phone (or connect both phones to the same Wi-Fi network).&#10;2. Connect your other phone to this phone\'s Hotspot.&#10;3. Open Chrome or Safari on the other phone and type the address above.&#10;4. Interact directly via voice dictation, chat with the multi-model AI team, and browse/edit phone workspace files with zero install on the second phone!</string>
+    <string name="laptop_howto_body" translatable="false">1. Turn on Wi-Fi Hotspot on this phone (or connect both phones to the same Wi-Fi network).&#10;2. Connect your other phone to this phone\'s Hotspot.&#10;3. Open Chrome or Safari on the other phone: scan the QR code, or type the short URL above and the 6-digit code.&#10;4. Chat with GOD-AI with instant smart model routing, speak by voice, and browse/edit phone workspace files with zero install!</string>
 </resources>
