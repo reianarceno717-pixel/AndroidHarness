@@ -25,6 +25,8 @@ import com.androidharness.app.llm.SmartAutoRouter
 import com.androidharness.app.llm.StreamEvent
 import com.androidharness.app.qrcode.QrBitmapGenerator
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.runCatching
+import kotlinx.coroutines.flow.first
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader

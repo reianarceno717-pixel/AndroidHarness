@@ -23,8 +23,7 @@ internal data class AppRuntimeState(
 }
 
 /** Tracks the whole app, including secondary activities, rather than an individual chat. */
-internal class AppRuntimePolicy(private val context: Context, private val settings: SettingsRepository) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+class AppRuntimePolicy(private val context: Context, private val settings: SettingsRepository) {    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val visible = MutableStateFlow(false)
     private val generationActive = MutableStateFlow(false)
     private val mutable = MutableStateFlow(AppRuntimeState())
